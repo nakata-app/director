@@ -1,0 +1,5 @@
+domain: refactor
+persona: refactor
+difficulty: easy
+ground_truth_source: hand-labeled by operator
+expected_outcome: is_even returns "n % 2 == 0" directly; behavior identical

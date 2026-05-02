@@ -1,0 +1,7 @@
+{
+  "assertions": [
+    {"type": "file_present", "path": "legacy_clean.py"},
+    {"type": "byte_match", "path": "legacy_clean.py", "needle": "def used():"},
+    {"type": "byte_match", "path": "legacy_clean.py", "needle": "def main():"}
+  ]
+}

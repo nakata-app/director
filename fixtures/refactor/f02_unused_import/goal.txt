@@ -1,0 +1,1 @@
+input/m.py'deki kullanılmayan import'ları (os, re) sil. parse() davranışı korunmalı. Sonucu m_clean.py olarak yaz.

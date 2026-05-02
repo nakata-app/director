@@ -1,0 +1,5 @@
+domain: refactor
+persona: refactor
+difficulty: easy
+ground_truth_source: hand-labeled by operator
+expected_outcome: only `import json` remains; parse() byte-identical

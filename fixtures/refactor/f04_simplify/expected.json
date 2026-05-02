@@ -1,0 +1,6 @@
+{
+  "assertions": [
+    {"type": "file_present", "path": "calc_simple.py"},
+    {"type": "byte_match", "path": "calc_simple.py", "needle": "return n % 2 == 0"}
+  ]
+}

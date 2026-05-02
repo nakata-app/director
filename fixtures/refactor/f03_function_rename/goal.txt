@@ -1,0 +1,1 @@
+input/svc.py'de doStuff fonksiyon adını snake_case standardına uygun şekilde do_stuff olarak yeniden adlandır. Tüm çağrı yerlerini güncelle. Davranış aynı kalmalı. Sonucu svc_renamed.py olarak yaz.

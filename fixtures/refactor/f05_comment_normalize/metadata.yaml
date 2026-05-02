@@ -1,0 +1,5 @@
+domain: refactor
+persona: refactor
+difficulty: medium
+ground_truth_source: PEP 8 (E261/E265 comment formatting) + Karpathy "no what comments"
+expected_outcome: TODO/FIXME kept with `# ` prefix; tautological inline comment removed

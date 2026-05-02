@@ -105,6 +105,16 @@ For full repository state at a specific point in time, use git: `git checkout <c
 
 **Operator note:** This is the first time a persona description in this repo has been changed by the system rather than by a human, and the change has been accepted as the working state. The accountability boundary moves from human-authored to system-authored. The fixture suite must catch any regression that follows.
 
+## 2026-05-03 01:00 scaffolding M3-T01 refactor-fixtures
+
+**Action:** Second domain landed. `fixtures/refactor/` now has 5 hand-curated fixtures covering distinct refactor archetypes: `f01_dead_code` (unused-function removal), `f02_unused_import` (PEP 8 unused-import cleanup), `f03_function_rename` (camelCase → snake_case rename including call site), `f04_simplify` (behavior-preserving if/else simplification), `f05_comment_normalize` (PEP 8 E261/E265 normalization + tautological-comment removal). Each is hermetic with own `input/`, `goal.txt`, `metadata.yaml`, `expected.json`, and `setup.sh` that seeds the post-refactor file for the dry-run-director assertion exercise.
+
+**Test coverage:** Dedicated `tests/test_refactor_fixtures.py` with 5 scenarios / 35 sub-assertions: presence, metadata `ground_truth_source` recorded for each, every fixture asserts at least one `byte_match` (specificity, not just file presence), suite runs deterministically (5/5 same status across two runs), 5 distinct needle sets (no archetype duplication). All green.
+
+**Live verification:** `./director.py fixture run refactor` → 5/5 pass, ~0.01s each.
+
+**Operator surface:** No new commands; existing `fixture run <domain>` already covers refactor.
+
 ## 2026-05-03 00:35 scaffolding M2-T04 fixture-suite
 
 **Action:** Fixture suite scaffold landed. Added `evaluate_fixture_assertions` (3 assertion types: file_present, byte_match, json_schema, all disk-truth, no LLM), `run_fixture` (setup.sh execution + assertion eval, dry-run-director default in M2), `run_fixture_suite` (per-domain aggregate). New CLI subcommand `./director.py fixture run <domain> [--persona <id>]`. Created `fixtures/security/` with 5 hand-curated fixtures (f01_sqli, f02_xss, f03_csrf, f04_auth_bypass, f05_idor), each hermetic (own input/api.py, own goal.txt, own setup.sh seeds finding.md for assertion exercise). Added `fixtures/README.md` with layout + assertion schema + contribution guidelines.

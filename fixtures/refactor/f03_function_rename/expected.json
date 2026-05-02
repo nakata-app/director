@@ -1,0 +1,7 @@
+{
+  "assertions": [
+    {"type": "file_present", "path": "svc_renamed.py"},
+    {"type": "byte_match", "path": "svc_renamed.py", "needle": "def do_stuff(x):"},
+    {"type": "byte_match", "path": "svc_renamed.py", "needle": "print(do_stuff(5))"}
+  ]
+}

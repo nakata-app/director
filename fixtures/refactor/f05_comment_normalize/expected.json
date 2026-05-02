@@ -1,0 +1,8 @@
+{
+  "assertions": [
+    {"type": "file_present", "path": "h_clean.py"},
+    {"type": "byte_match", "path": "h_clean.py", "needle": "# TODO"},
+    {"type": "byte_match", "path": "h_clean.py", "needle": "# FIXME"},
+    {"type": "byte_match", "path": "h_clean.py", "needle": "def f():"}
+  ]
+}

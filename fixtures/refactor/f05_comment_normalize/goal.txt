@@ -1,0 +1,1 @@
+input/h.py'deki yorum satırlarını normalize et: PEP 8 uyumlu olarak `# ` (hash + space) prefix'i kullan, "this calculates stuff" gibi neyi yaptığını söyleyen yorumları sil (kod kendi kendini açıklıyor), TODO/FIXME yorumlarını koru ama tutarlı format ver. Sonucu h_clean.py olarak yaz.

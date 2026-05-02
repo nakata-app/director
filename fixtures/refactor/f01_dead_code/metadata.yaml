@@ -1,0 +1,5 @@
+domain: refactor
+persona: refactor
+difficulty: easy
+ground_truth_source: hand-labeled by operator from /tmp/dir-refactor smoke run 2026-05-02
+expected_outcome: dead_helper removed; used() + main() byte-identical

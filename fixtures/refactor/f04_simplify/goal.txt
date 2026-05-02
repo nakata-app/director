@@ -1,0 +1,1 @@
+input/calc.py'deki is_even fonksiyonunu davranış-koruyan bir şekilde sadeleştir: if/else dönüşünü tek satıra indir. Sonucu calc_simple.py olarak yaz.

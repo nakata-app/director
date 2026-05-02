@@ -1,0 +1,7 @@
+{
+  "assertions": [
+    {"type": "file_present", "path": "m_clean.py"},
+    {"type": "byte_match", "path": "m_clean.py", "needle": "import json"},
+    {"type": "byte_match", "path": "m_clean.py", "needle": "def parse(s):"}
+  ]
+}

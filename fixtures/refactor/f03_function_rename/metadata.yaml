@@ -1,0 +1,5 @@
+domain: refactor
+persona: refactor
+difficulty: easy
+ground_truth_source: PEP 8 (snake_case for functions)
+expected_outcome: doStuff renamed to do_stuff at definition AND call site
