@@ -10,3 +10,13 @@ mnemonics.log
 .metis/
 mnemonics.fallback.jsonl
 fixtures/*/*/finding.md
+fixtures/refactor/*/legacy_clean.py
+fixtures/refactor/*/m_clean.py
+fixtures/refactor/*/svc_renamed.py
+fixtures/refactor/*/calc_simple.py
+fixtures/refactor/*/h_clean.py
+fixtures/design/*/card.html
+fixtures/design/*/submit_button.html
+fixtures/design/*/theme.css
+fixtures/design/*/responsive.css
+fixtures/design/*/form_focus.html

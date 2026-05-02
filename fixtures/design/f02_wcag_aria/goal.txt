@@ -1,0 +1,1 @@
+"Submit" butonu için WCAG 2.2 AA uyumlu bir HTML üret: aria-label, role, focusable olmalı. Çıktıyı submit_button.html dosyasına yaz.

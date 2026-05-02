@@ -1,0 +1,1 @@
+Bir "Card" bileşeni için minimal HTML+CSS scaffold üret. button, header, body bölümleri olmalı. CSS sınıf isimleri: .card, .card-header, .card-body. Çıktıyı card.html dosyasına yaz.

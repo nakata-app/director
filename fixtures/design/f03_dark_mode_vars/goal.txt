@@ -1,0 +1,1 @@
+Light/dark theme için CSS custom property tanımı yaz. :root altında --bg, --fg değişkenleri olsun, [data-theme="dark"] altında dark variantları olsun. Çıktıyı theme.css dosyasına yaz.

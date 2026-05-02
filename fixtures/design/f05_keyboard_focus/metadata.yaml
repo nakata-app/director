@@ -1,0 +1,5 @@
+domain: design
+persona: design
+difficulty: medium
+ground_truth_source: WCAG 2.2 Level AA (2.4.3 Focus Order) + tabindex spec
+expected_outcome: name/email/submit have tabindex=1, 2, 3 respectively

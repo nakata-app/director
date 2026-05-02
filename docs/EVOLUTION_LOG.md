@@ -105,6 +105,16 @@ For full repository state at a specific point in time, use git: `git checkout <c
 
 **Operator note:** This is the first time a persona description in this repo has been changed by the system rather than by a human, and the change has been accepted as the working state. The accountability boundary moves from human-authored to system-authored. The fixture suite must catch any regression that follows.
 
+## 2026-05-03 01:25 scaffolding M3-T02 design-fixtures
+
+**Action:** Third domain landed. `fixtures/design/` now has 5 hand-curated design fixtures covering distinct UI/UX archetypes: `f01_component_scaffold` (BEM-style HTML+CSS card component), `f02_wcag_aria` (WCAG 2.2 AA `aria-label` + `role` on interactive button), `f03_dark_mode_vars` (CSS custom properties for `:root` + `[data-theme="dark"]`), `f04_responsive_breakpoint` (mobile-first media queries at 768px and 1024px), `f05_keyboard_focus` (WCAG 2.4.3 focus order via tabindex 1/2/3). Each is hermetic with `goal.txt`, `metadata.yaml`, `expected.json`, `setup.sh` seeding the post-design output for the dry-run-director assertion exercise.
+
+**Test coverage:** Dedicated `tests/test_design_fixtures.py` with 6 scenarios / 38 sub-assertions: presence (5 × 4 files), `ground_truth_source` recorded for each, every fixture asserts at least one `byte_match`, suite runs deterministically, 5 distinct needle sets, AND a domain-coverage check (suite contains accessibility, theming, and responsive archetypes verified by needle inspection). All green.
+
+**Live verification:** `./director.py fixture run design` → 5/5 pass, ~0.01s each.
+
+**Cleanup:** Generated artifacts (legacy_clean.py, m_clean.py, svc_renamed.py, calc_simple.py, h_clean.py for refactor; card.html, submit_button.html, theme.css, responsive.css, form_focus.html for design) added to `.gitignore`. M3-T01's first commit accidentally tracked the refactor artifacts; T02 commit removes them and prevents future tracking.
+
 ## 2026-05-03 01:00 scaffolding M3-T01 refactor-fixtures
 
 **Action:** Second domain landed. `fixtures/refactor/` now has 5 hand-curated fixtures covering distinct refactor archetypes: `f01_dead_code` (unused-function removal), `f02_unused_import` (PEP 8 unused-import cleanup), `f03_function_rename` (camelCase → snake_case rename including call site), `f04_simplify` (behavior-preserving if/else simplification), `f05_comment_normalize` (PEP 8 E261/E265 normalization + tautological-comment removal). Each is hermetic with own `input/`, `goal.txt`, `metadata.yaml`, `expected.json`, and `setup.sh` that seeds the post-refactor file for the dry-run-director assertion exercise.

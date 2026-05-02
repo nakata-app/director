@@ -1,0 +1,5 @@
+domain: design
+persona: design
+difficulty: easy
+ground_truth_source: hand-labeled by operator (BEM-style class naming)
+expected_outcome: card.html contains .card, .card-header, .card-body classes

@@ -1,0 +1,5 @@
+domain: design
+persona: design
+difficulty: easy
+ground_truth_source: WCAG 2.2 Level AA (4.1.2 Name Role Value)
+expected_outcome: button has aria-label and role attributes

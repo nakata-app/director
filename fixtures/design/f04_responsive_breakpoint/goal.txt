@@ -1,0 +1,1 @@
+Responsive layout için mobile-first media query yaz: 768px breakpoint tablet, 1024px desktop. .container sınıfı için padding ayarları farklı olsun. Çıktıyı responsive.css dosyasına yaz.

@@ -1,0 +1,7 @@
+{
+  "assertions": [
+    {"type": "file_present", "path": "responsive.css"},
+    {"type": "byte_match", "path": "responsive.css", "needle": "@media (min-width: 768px)"},
+    {"type": "byte_match", "path": "responsive.css", "needle": "@media (min-width: 1024px)"}
+  ]
+}

@@ -1,0 +1,8 @@
+{
+  "assertions": [
+    {"type": "file_present", "path": "theme.css"},
+    {"type": "byte_match", "path": "theme.css", "needle": ":root"},
+    {"type": "byte_match", "path": "theme.css", "needle": "data-theme=\"dark\""},
+    {"type": "byte_match", "path": "theme.css", "needle": "--bg"}
+  ]
+}

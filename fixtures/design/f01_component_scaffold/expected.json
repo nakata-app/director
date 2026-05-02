@@ -1,0 +1,7 @@
+{
+  "assertions": [
+    {"type": "file_present", "path": "card.html"},
+    {"type": "byte_match", "path": "card.html", "needle": "card-header"},
+    {"type": "byte_match", "path": "card.html", "needle": "card-body"}
+  ]
+}

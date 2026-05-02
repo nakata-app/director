@@ -1,0 +1,5 @@
+domain: design
+persona: design
+difficulty: medium
+ground_truth_source: CSS3 media queries spec + Bootstrap breakpoint conventions
+expected_outcome: responsive.css contains @media (min-width: 768px) and (min-width: 1024px)

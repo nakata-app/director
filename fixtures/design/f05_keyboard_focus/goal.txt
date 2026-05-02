@@ -1,0 +1,1 @@
+Üç adımlı bir form için keyboard tabindex sırasını belirle: name, email, submit. tabindex değerleri 1, 2, 3 olmalı, tüm input'lar focusable olmalı. Çıktıyı form_focus.html dosyasına yaz.

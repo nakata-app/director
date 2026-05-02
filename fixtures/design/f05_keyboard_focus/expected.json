@@ -1,0 +1,8 @@
+{
+  "assertions": [
+    {"type": "file_present", "path": "form_focus.html"},
+    {"type": "byte_match", "path": "form_focus.html", "needle": "tabindex=\"1\""},
+    {"type": "byte_match", "path": "form_focus.html", "needle": "tabindex=\"2\""},
+    {"type": "byte_match", "path": "form_focus.html", "needle": "tabindex=\"3\""}
+  ]
+}

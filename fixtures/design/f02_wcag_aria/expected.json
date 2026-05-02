@@ -1,0 +1,7 @@
+{
+  "assertions": [
+    {"type": "file_present", "path": "submit_button.html"},
+    {"type": "byte_match", "path": "submit_button.html", "needle": "aria-label"},
+    {"type": "byte_match", "path": "submit_button.html", "needle": "role="}
+  ]
+}
