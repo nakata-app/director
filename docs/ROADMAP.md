@@ -53,7 +53,7 @@ Four milestones, sequenced. Each milestone has explicit acceptance criteria. Ski
 - Auto-rollback: if a tightened persona's fixture pass rate drops below the previous version, restore from backup automatically and log the rollback.
 - Per-domain drift signals can be tuned independently (security may tolerate more verbose output than refactor).
 
-**Status:** in progress. Security (5 fixtures) landed in M2-T04. T01 (refactor, 5 fixtures + dedicated test) landed 2026-05-03 01:00, 35/35 sub-assertion green. T02 (design, 5 fixtures + dedicated test) landed 2026-05-03 01:25, 38/38 sub-assertion green. Three domains now have 15 hand-curated fixtures total. T03 (auto-rollback wiring, HIGH blast radius) and T04 (per-domain drift tuning) remain.
+**Status:** in progress. Security (5 fixtures) landed in M2-T04. T01 (refactor, 5 fixtures + dedicated test) landed 2026-05-03 01:00, 35/35 sub-assertion green. T02 (design, 5 fixtures + dedicated test) landed 2026-05-03 01:25, 38/38 sub-assertion green. T03 (auto-rollback wiring, HIGH blast radius) landed 2026-05-03 01:50, 19/19 sub-assertion green, live simulation passed for both healthy and synthetic-regression scenarios, cross-family Llama 3.3 review verdict PASS on all five acceptance rules. T04 (per-domain drift tuning) remains.
 
 ## M4: Production embedding + community
 

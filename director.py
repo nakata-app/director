@@ -1008,6 +1008,11 @@ def tighten_critic_if_drift(decisions: list[dict], dry_run: bool = True) -> dict
     out["new_len"] = len(proposal["new"])
     if dry_run:
         return out
+    # M3-T03: snapshot fixture baselines for affected domains BEFORE applying.
+    affected = _domains_for_target("critic")
+    before_baselines = _take_baselines(affected)
+    event_key = f"critic:{datetime.now().isoformat(timespec='seconds')}"
+    reset_rollback_guard(event_key)
     if apply_tightened_critic(proposal["new"]):
         out["applied"] = True
         ts = datetime.now().strftime("%Y-%m-%d %H:%M")
@@ -1022,6 +1027,13 @@ def tighten_critic_if_drift(decisions: list[dict], dry_run: bool = True) -> dict
             "n": quality["n_decisions"],
             "old": out["old_len"], "new": out["new_len"],
         })
+        # Post-apply regression check + auto-rollback if any PASS→FAIL flip.
+        out["rollback"] = _post_tighten_regression_hook(
+            kind="critic", target_id="critic_prompt",
+            target_path=CRITIC_PROMPT_PATH,
+            before_baselines=before_baselines,
+            event_key=event_key,
+        )
     return out
 
 def tighten_decomposer_if_drift(goal: str, plan: dict, baseline_avg: float = 4.0,
@@ -1042,6 +1054,11 @@ def tighten_decomposer_if_drift(goal: str, plan: dict, baseline_avg: float = 4.0
     out["new_len"] = len(proposal["new"])
     if dry_run:
         return out
+    # M3-T03: snapshot fixture baselines for affected domains BEFORE applying.
+    affected = _domains_for_target("decomposer")
+    before_baselines = _take_baselines(affected)
+    event_key = f"decomposer:{datetime.now().isoformat(timespec='seconds')}"
+    reset_rollback_guard(event_key)
     if apply_tightened_decomposer(proposal["new"]):
         out["applied"] = True
         ts = datetime.now().strftime("%Y-%m-%d %H:%M")
@@ -1055,6 +1072,51 @@ def tighten_decomposer_if_drift(goal: str, plan: dict, baseline_avg: float = 4.0
             "score": fid["score"], "literal": fid["literal"],
             "old": out["old_len"], "new": out["new_len"],
         })
+        out["rollback"] = _post_tighten_regression_hook(
+            kind="decomposer", target_id="decomposer_prompt",
+            target_path=DECOMPOSER_PROMPT_PATH,
+            before_baselines=before_baselines,
+            event_key=event_key,
+        )
+    return out
+
+def tighten_persona_with_rollback(persona_id: str, sample_output: str,
+                                   dry_run: bool = True) -> dict:
+    """M3-T03 persona wrapper: tighten + apply + post-apply regression check.
+    Mirrors the decomposer/critic wrappers but for persona descriptions.
+    Returns {'fired', 'applied', 'old_len', 'new_len', 'rollback'}.
+    """
+    out = {"fired": False, "applied": False, "old_len": 0, "new_len": 0}
+    proposal = auto_tighten_persona(persona_id, sample_output)
+    if not proposal:
+        return out
+    out["fired"] = True
+    out["old_len"] = len(proposal["old"])
+    out["new_len"] = len(proposal["new"])
+    if dry_run:
+        return out
+    affected = _domains_for_target("persona", persona_id)
+    before_baselines = _take_baselines(affected)
+    event_key = f"persona:{persona_id}:{datetime.now().isoformat(timespec='seconds')}"
+    reset_rollback_guard(event_key)
+    if apply_tightened_persona(persona_id, proposal["new"]):
+        out["applied"] = True
+        ts = datetime.now().strftime("%Y-%m-%d %H:%M")
+        mnemonics_record(
+            f"[{ts}] director persona-tighten: persona={persona_id} | "
+            f"old={out['old_len']}c -> new={out['new_len']}c",
+            ns="director",
+        )
+        append_evolution_log("persona-tighten", {
+            "persona": persona_id,
+            "old": out["old_len"], "new": out["new_len"],
+        })
+        out["rollback"] = _post_tighten_regression_hook(
+            kind="persona", target_id=persona_id,
+            target_path=PERSONAS_PATH,
+            before_baselines=before_baselines,
+            event_key=event_key,
+        )
     return out
 
 def append_evolution_log(event_kind: str, details: dict) -> None:
@@ -2009,6 +2071,210 @@ def cmd_cancel(args) -> int:
     sealed = seal_run_events(args.run_id)
     print(f"Cancelled {killed} running task(s); sealed {sealed} live-feed events.")
     return 0
+
+# --- M3-T03: auto-rollback wiring (HIGH blast — disk-truth only, no LLM) ---
+ROLLBACK_GUARD: dict[str, int] = {}  # tightener_event_key → rollback count
+ROLLBACK_GUARD_LOCK = threading.Lock()
+ROLLBACK_CAP_PER_EVENT = 1
+
+def rollback_guard_acquire(event_key: str) -> bool:
+    """Reentrancy guard: at most ROLLBACK_CAP_PER_EVENT rollbacks per event_key.
+    Returns True if rollback is allowed; False blocks chaining."""
+    with ROLLBACK_GUARD_LOCK:
+        n = ROLLBACK_GUARD.get(event_key, 0)
+        if n >= ROLLBACK_CAP_PER_EVENT:
+            return False
+        ROLLBACK_GUARD[event_key] = n + 1
+        return True
+
+def reset_rollback_guard(event_key: str) -> None:
+    """Reset counter for a fresh event window (test setup or new tighten)."""
+    with ROLLBACK_GUARD_LOCK:
+        ROLLBACK_GUARD.pop(event_key, None)
+
+def fixture_compare(before: dict, after: dict) -> dict:
+    """Compute per-fixture deltas. Returns {improved, regressed, regressed_ids,
+    total, regression_signal}. regression_signal is True iff at least one
+    fixture flipped from PASS to FAIL — flips, not metric drops, drive the gate."""
+    all_ids = set(before) | set(after)
+    improved_ids = []
+    regressed_ids = []
+    for fid in sorted(all_ids):
+        b = before.get(fid, "fail")
+        a = after.get(fid, "fail")
+        if b == "fail" and a == "pass":
+            improved_ids.append(fid)
+        elif b == "pass" and a != "pass":
+            regressed_ids.append(fid)
+    return {
+        "improved": len(improved_ids),
+        "regressed": len(regressed_ids),
+        "regressed_ids": regressed_ids,
+        "improved_ids": improved_ids,
+        "total": len(all_ids),
+        "regression_signal": len(regressed_ids) > 0,
+    }
+
+def fixture_baseline(domain: str) -> dict:
+    """Snapshot {fixture_id: status} for a domain by running the suite once.
+    Cached on disk under fixtures/<domain>/.baseline.json keyed by personas.json
+    content hash so repeated calls without a tighten event are essentially free.
+    """
+    import hashlib
+    domain_root = FIXTURES_ROOT / domain
+    if not domain_root.exists():
+        return {}
+    cache_path = domain_root / ".baseline.json"
+    pers_text = PERSONAS_PATH.read_text() if PERSONAS_PATH.exists() else ""
+    pers_hash = hashlib.sha1(pers_text.encode("utf-8", errors="replace")).hexdigest()[:12]
+    if cache_path.exists():
+        try:
+            cached = json.loads(cache_path.read_text())
+            if cached.get("personas_hash") == pers_hash:
+                return cached.get("statuses", {})
+        except Exception:
+            pass
+    report = run_fixture_suite(str(domain_root), dry_run_director=True)
+    statuses = {r["fixture_id"]: r["status"] for r in report["per_fixture"]}
+    try:
+        cache_path.write_text(json.dumps({"personas_hash": pers_hash,
+                                          "statuses": statuses}, indent=2))
+    except Exception:
+        pass
+    return statuses
+
+def auto_rollback_file(target_path: Path, backup_path: str, kind: str,
+                       target_id: str = "", regressed_ids: list[str] | None = None) -> bool:
+    """Generic atomic rollback for any tightened file (personas.json,
+    decomposer_prompt.txt, critic_prompt.txt). Snapshots the regressed state
+    to a *-pre-rollback backup first (audit), then atomically restores from
+    the named prior backup. Records mnemonics + EVOLUTION_LOG entries of
+    kind auto-rollback. D5 backup before write + D6 public log. No LLM
+    consulted (D3 disk-truth only).
+    """
+    try:
+        from pathlib import Path as _P
+        target_path = _P(target_path)
+        backup = _P(backup_path)
+        if not backup.exists():
+            print(f"⚠️  rollback: backup not found {backup_path}", file=sys.stderr)
+            return False
+        ts = datetime.now().strftime("%Y%m%d-%H%M%S")
+        pre_rollback = target_path.with_suffix(f"{target_path.suffix}.bak.{ts}-pre-rollback")
+        if target_path.exists():
+            pre_rollback.write_text(target_path.read_text())
+        tmp = target_path.with_suffix(target_path.suffix + ".tmp")
+        tmp.write_text(backup.read_text())
+        tmp.replace(target_path)
+        ts_log = datetime.now().strftime("%Y-%m-%d %H:%M")
+        mnemonics_record(
+            f"[{ts_log}] director auto-rollback: kind={kind} target={target_id} | "
+            f"regressed={regressed_ids or []} | restored_from={backup.name}",
+            ns="director",
+        )
+        append_evolution_log("auto-rollback", {
+            "kind": kind,
+            "target": target_id or "-",
+            "regressed_ids": ",".join(regressed_ids or []) or "-",
+            "restored_from": backup.name,
+            "pre_rollback_backup": pre_rollback.name,
+        })
+        return True
+    except Exception as e:
+        print(f"⚠️  auto_rollback_file failed: {e}", file=sys.stderr)
+        return False
+
+def auto_rollback_persona(persona_id: str, backup_path: str,
+                          regressed_ids: list[str] | None = None) -> bool:
+    """Persona-specific rollback wrapper (preserved for the existing call sites
+    and unit tests). Delegates to auto_rollback_file."""
+    return auto_rollback_file(PERSONAS_PATH, backup_path, kind="persona",
+                              target_id=persona_id, regressed_ids=regressed_ids)
+
+# Domain affinity: which fixture domains a tighten event should re-evaluate.
+PERSONA_DOMAINS = {
+    "security": ["security"],
+    "refactor": ["refactor"],
+    "design": ["design"],
+    "performance": ["security", "refactor"],  # closest fixture coverage
+    "research": ["security"],
+    "implementer": ["refactor"],
+    "ataturk": ["refactor"],
+    "default": ["security", "refactor", "design"],
+}
+ALL_DOMAINS = ["security", "refactor", "design"]
+
+def _domains_for_target(kind: str, target_id: str = "") -> list[str]:
+    """Return fixture domains affected by a tighten event of the given kind."""
+    if kind == "persona":
+        return PERSONA_DOMAINS.get(target_id, ALL_DOMAINS)
+    return ALL_DOMAINS  # decomposer + critic affect all domains
+
+def _take_baselines(domains: list[str]) -> dict[str, dict]:
+    """Snapshot {domain: {fixture_id: status}} for each affected domain."""
+    return {d: fixture_baseline(d) for d in domains}
+
+def _detect_regressions(before: dict[str, dict], after: dict[str, dict]) -> dict:
+    """Aggregate fixture_compare across domains. Returns
+    {regressed: bool, by_domain: {domain: compare_result}, regressed_ids: [...]}.
+    """
+    by_domain = {}
+    any_regression = False
+    all_regressed = []
+    for d in before:
+        cmp = fixture_compare(before[d], after.get(d, {}))
+        by_domain[d] = cmp
+        if cmp["regression_signal"]:
+            any_regression = True
+            all_regressed.extend(f"{d}/{x}" for x in cmp["regressed_ids"])
+    return {"regressed": any_regression, "by_domain": by_domain,
+            "regressed_ids": all_regressed}
+
+def _latest_backup(target_path: Path, suffix_marker: str = "-auto-tighten") -> Path | None:
+    """Find the most recent timestamped backup of `target_path`. Used to identify
+    the previous good state to roll back to (the auto-tighten backup is the
+    last-known-good, since the tightener wrote it just before applying)."""
+    parent = target_path.parent
+    name = target_path.name
+    candidates = sorted(parent.glob(f"{name}.bak.*{suffix_marker}"))
+    return candidates[-1] if candidates else None
+
+def _post_tighten_regression_hook(kind: str, target_id: str,
+                                   target_path: Path,
+                                   before_baselines: dict[str, dict],
+                                   event_key: str) -> dict:
+    """Run after a successful tightener.apply(). Re-runs affected fixture suites,
+    detects PASS→FAIL flips, and rolls back atomically if any flip is found.
+    Reentrancy capped (ROLLBACK_CAP_PER_EVENT=1 per event_key).
+    Returns {checked, regressed, rolled_back, regressed_ids}.
+    """
+    domains = list(before_baselines.keys())
+    # Force a fresh suite run after the tightener changed the on-disk prompt.
+    # Bypass the personas-hash cache by deleting per-domain cache files.
+    for d in domains:
+        cache = FIXTURES_ROOT / d / ".baseline.json"
+        if cache.exists():
+            try: cache.unlink()
+            except Exception: pass
+    after = _take_baselines(domains)
+    diag = _detect_regressions(before_baselines, after)
+    out = {"checked": True, "regressed": diag["regressed"],
+           "rolled_back": False, "regressed_ids": diag["regressed_ids"],
+           "by_domain": diag["by_domain"]}
+    if not diag["regressed"]:
+        return out
+    if not rollback_guard_acquire(event_key):
+        out["reason"] = "rollback already taken for this event (reentrancy cap)"
+        return out
+    backup = _latest_backup(target_path)
+    if backup is None:
+        out["reason"] = f"no prior backup found for {target_path.name}"
+        return out
+    ok = auto_rollback_file(target_path, str(backup), kind=kind,
+                            target_id=target_id,
+                            regressed_ids=diag["regressed_ids"])
+    out["rolled_back"] = ok
+    return out
 
 # --- M2-T04: fixture suite scaffold (M3 prerequisite, observation only in M2) ---
 FIXTURES_ROOT = DIRECTOR_HOME / "fixtures"

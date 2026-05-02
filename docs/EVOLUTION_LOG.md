@@ -105,6 +105,33 @@ For full repository state at a specific point in time, use git: `git checkout <c
 
 **Operator note:** This is the first time a persona description in this repo has been changed by the system rather than by a human, and the change has been accepted as the working state. The accountability boundary moves from human-authored to system-authored. The fixture suite must catch any regression that follows.
 
+## 2026-05-03 01:50 scaffolding M3-T03 auto-rollback wiring
+
+**Action:** Closed-loop self-correction landed. After a tightener (persona, decomposer, or critic) applies its proposal, Director re-runs the affected fixture domains and detects PASS→FAIL flips. If at least one flip occurs, the system atomically rolls back to the previous backup and records an `auto-rollback` event. No LLM is consulted in the rollback path, D3 disk-truth wins.
+
+**New code in director.py:**
+- `fixture_compare(before, after)`, flips, not numeric drops. Returns `regression_signal=True` iff at least one PASS→FAIL.
+- `fixture_baseline(domain)`, disk-cached suite snapshot keyed by `personas.json` hash; cache invalidated on tightener.apply().
+- `auto_rollback_file(target, backup, kind, target_id, regressed_ids)`, generic atomic rollback. Step 1: snapshot the regressed state to `*-pre-rollback` for audit. Step 2: atomic restore from the named prior backup. Step 3: mnemonics record + EVOLUTION_LOG entry. `auto_rollback_persona` is now a thin wrapper.
+- `_post_tighten_regression_hook(...)`, drives the 4-step sequence (clear cache → re-run baselines → compare → rollback if regression). Reentrancy capped per `event_key` via `rollback_guard_acquire`.
+- Three tightener wrappers (`tighten_critic_if_drift`, `tighten_decomposer_if_drift`, new `tighten_persona_with_rollback`) all wire the same hook after their respective `apply_*` call.
+
+**Domain affinity (`PERSONA_DOMAINS`):** persona events affect their own domain (security→security, refactor→refactor, design→design); decomposer and critic events affect all three domains. Each tightener event takes a baseline snapshot for the affected domains BEFORE applying.
+
+**Reentrancy:** `ROLLBACK_GUARD` dict keyed by `event_key` (e.g. `decomposer:2026-05-03T01:50:00`) caps rollbacks at 1 per event. A rollback that itself causes a regression cannot chain.
+
+**Test coverage:** Dedicated `tests/test_auto_rollback.py` with 6 scenarios / 19 sub-assertions: fixture_compare math (no flip / single flip / multi flip / mixed improvement+regression), atomic rollback ordering (pre-rollback backup written BEFORE restore + contents preserved), reentrancy guard (first acquire allowed, second blocked, after reset allowed). All green.
+
+**Live simulation (no commit-time side effects, artifacts cleaned up):**
+- Healthy tighten: 5/5/5 baseline → 5/5/5 after. `regressed=False`, `rolled_back=False`.
+- Synthetic regression: f01_sqli flipped to fail. `regression_signal=True`, latest `*-auto-tighten` backup found, rollback returned True, `*-pre-rollback` audit backup created.
+
+**Mixed-family review (CO_AGENT_PLAN compliance):** Implementer = Claude Opus 4.7 (Anthropic). Reviewer = Llama 3.3 70B via NIM (Meta). First-pass verdict was REVISE due to a 7000c diff truncation hiding the auto_rollback_file body; on re-review with the full function source, verdict is PASS, all five rule checks satisfied (flip-not-drop, regressed-backup-first, reentrancy-cap, disk-truth-only, all-three-wrappers).
+
+**Cumulative test sweep:** 176 sub-assertions across 8 suites, 0 fails (drift_signals 10, decomposer 20, critic 21, mnemonics 18, fixture 15, refactor 35, design 38, auto_rollback 19).
+
+**Operator note:** No live auto-rollback event has fired yet. The first organic event will be appended by the regression hook itself when a real production tighten causes a fixture flip.
+
 ## 2026-05-03 01:25 scaffolding M3-T02 design-fixtures
 
 **Action:** Third domain landed. `fixtures/design/` now has 5 hand-curated design fixtures covering distinct UI/UX archetypes: `f01_component_scaffold` (BEM-style HTML+CSS card component), `f02_wcag_aria` (WCAG 2.2 AA `aria-label` + `role` on interactive button), `f03_dark_mode_vars` (CSS custom properties for `:root` + `[data-theme="dark"]`), `f04_responsive_breakpoint` (mobile-first media queries at 768px and 1024px), `f05_keyboard_focus` (WCAG 2.4.3 focus order via tabindex 1/2/3). Each is hermetic with `goal.txt`, `metadata.yaml`, `expected.json`, `setup.sh` seeding the post-design output for the dry-run-director assertion exercise.
