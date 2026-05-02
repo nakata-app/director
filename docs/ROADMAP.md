@@ -41,7 +41,7 @@ Four milestones, sequenced. Each milestone has explicit acceptance criteria. Ski
 - Backup and rollback semantics match persona path.
 - Composite drift detection across all three (persona + decomposer + critic) does not produce thrashing or oscillation.
 
-**Status:** **in progress**. T01 (decomposer auto-tighten) landed 2026-05-02 23:30: drift signals + scorer + gate + Llama-3.3 mixed-family tightener + atomic apply + backup + wrapper, 8/8 unit tests green, live A/B verified, EVOLUTION_LOG entry recorded. T02 (critic auto-tighten) landed 2026-05-02 23:55: precision/recall against disk-truth + bidirectional gate + Llama tightener + density + placeholder preservation + wrapper, 8/8 unit tests green (21 sub-assertions), live A/B verified. T03 (mnemonics-robustness) landed 2026-05-03 00:15: retry+backoff (1s/3s/9s, 13s budget) + JSONL fallback + thread-safe append + replay CLI + OPERATOR.md doc, 5/5 unit tests green (18 sub-assertions). T04 (fixture-scaffold) remains.
+**Status:** **CLOSED** as of 2026-05-03 00:35. T01 (decomposer auto-tighten) landed 2026-05-02 23:30: drift signals + scorer + gate + Llama-3.3 mixed-family tightener + atomic apply + backup + wrapper, 8/8 unit tests green, live A/B verified. T02 (critic auto-tighten) landed 2026-05-02 23:55: precision/recall against disk-truth + bidirectional gate + Llama tightener + density + placeholder preservation + wrapper, 21/21 sub-assertions green, live A/B verified. T03 (mnemonics-robustness) landed 2026-05-03 00:15: retry+backoff (1s/3s/9s, 13s budget) + JSONL fallback + thread-safe append + replay CLI + OPERATOR.md doc, 18/18 sub-assertions green. T04 (fixture-scaffold, M3 prerequisite) landed 2026-05-03 00:35: 3-type disk-truth assertion evaluator + run_fixture + suite runner + CLI + 5 hand-curated security fixtures + fixtures/README.md, 15/15 sub-assertions green, all 5 fixtures pass live.
 
 ## M3: Multi-domain with ground-truth fixture suites
 
@@ -53,7 +53,7 @@ Four milestones, sequenced. Each milestone has explicit acceptance criteria. Ski
 - Auto-rollback: if a tightened persona's fixture pass rate drops below the previous version, restore from backup automatically and log the rollback.
 - Per-domain drift signals can be tuned independently (security may tolerate more verbose output than refactor).
 
-**Status:** not started.
+**Status:** scaffold ready (M2-T04 landed 2026-05-03). 5 security fixtures with disk-truth assertions and a deterministic runner are in place. Remaining M3 work: hand-curated fixtures for refactor and design domains, the M3 auto-rollback wiring on suite pass-rate regression, per-domain drift tuning.
 
 ## M4: Production embedding + community
 

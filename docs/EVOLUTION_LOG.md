@@ -105,6 +105,20 @@ For full repository state at a specific point in time, use git: `git checkout <c
 
 **Operator note:** This is the first time a persona description in this repo has been changed by the system rather than by a human, and the change has been accepted as the working state. The accountability boundary moves from human-authored to system-authored. The fixture suite must catch any regression that follows.
 
+## 2026-05-03 00:35 scaffolding M2-T04 fixture-suite
+
+**Action:** Fixture suite scaffold landed. Added `evaluate_fixture_assertions` (3 assertion types: file_present, byte_match, json_schema, all disk-truth, no LLM), `run_fixture` (setup.sh execution + assertion eval, dry-run-director default in M2), `run_fixture_suite` (per-domain aggregate). New CLI subcommand `./director.py fixture run <domain> [--persona <id>]`. Created `fixtures/security/` with 5 hand-curated fixtures (f01_sqli, f02_xss, f03_csrf, f04_auth_bypass, f05_idor), each hermetic (own input/api.py, own goal.txt, own setup.sh seeds finding.md for assertion exercise). Added `fixtures/README.md` with layout + assertion schema + contribution guidelines.
+
+**M3 prerequisite:** This is observation-only scaffolding. The runner reports pass/fail per fixture but does NOT fire auto-tighten or auto-rollback. M3 work wires `run_fixture_suite`'s pass-rate signal to the rollback decision (auto-restore previous backup if a tightened persona regresses on the suite).
+
+**Test coverage:** 6 scenarios / 15 sub-assertions in `tests/test_fixture_runner.py`, all green: file_present (mixed), byte_match (mixed), json_schema (mixed), determinism (same fixture twice → same result), setup.sh failure surfaces as `setup-failure` status (not assertion fail), suite aggregator returns correct counts and per-fixture metadata.
+
+**Live verification:** All 5 security fixtures pass under `./director.py fixture run security` (5/5 pass, latency ~0.01s each).
+
+**Operator surface:** `OPERATOR.md` got a "Running the fixture suite" section.
+
+**Closes M2:** T01 (decomposer-tighten) + T02 (critic-tighten) + T03 (mnemonics-robustness) + T04 (fixture-scaffold) all landed. M3 multi-domain + auto-rollback ready to start.
+
 ## 2026-05-03 00:15 scaffolding M2-T03 mnemonics-robustness
 
 **Action:** `mnemonics_record` rewritten with retry+backoff+fallback. Strategy: 1 initial attempt + 3 retries with exponential backoff (1s, 3s, 9s, cumulative 13s). Per-attempt timeout 5s. Failed records queued to `mnemonics.fallback.jsonl` (JSONL, ts/ns/text fields) under a process-wide `threading.Lock` so concurrent record() calls don't tear lines. New `mnemonics_replay_fallback()` reads queue, retries ingest, prunes successful entries, leaves failed ones. CLI subcommand `./director.py mnemonics-replay` exposes operator-triggered replay (never implicit, so a stuck MCP can't cause runaway retry).

@@ -139,6 +139,19 @@ print(f'Today Opus est: \${total:.2f}')
 
 If any check fails, investigate before the next run.
 
+## Running the fixture suite (M2-T04)
+
+Fixtures live under `fixtures/<domain>/<fixture_id>/` (see `fixtures/README.md` for layout). Each fixture brings its own `goal.txt`, `expected.json` (structural assertions), `metadata.yaml`, optional `setup.sh`, and optional `input/` directory. The runner reads disk artifacts and applies the assertions; no LLM is consulted (D3 disk-truth wins).
+
+```bash
+./director.py fixture run security
+./director.py fixture run security --persona security
+```
+
+Output is a per-fixture table (id, status, latency, reason) plus aggregate totals. Exit code is `0` when every fixture passes, `1` otherwise.
+
+In M2 the suite is **observation only**: results are reported but no auto-tighten or auto-rollback fires from a fixture failure. M3 wires the rollback decision to the suite's pass-rate signal.
+
 ## Mnemonics replay (M2-T03)
 
 Mnemonics ingest is best-effort. If the local MCP server is slow or down, the record is retried up to 3 times with exponential backoff (1s, 3s, 9s). All four attempts failing means the record gets queued in `mnemonics.fallback.jsonl` instead of being silently dropped, and a `FALLBACK` line is written to `mnemonics.log`.

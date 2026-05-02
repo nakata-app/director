@@ -1,0 +1,1 @@
+input/api.py'daki /login endpoint'inde reflected XSS riski var mı incele. Bulduğun açığı PoC + tek-satır escape fix'i ile finding.md'ye yaz.

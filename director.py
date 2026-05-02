@@ -2010,6 +2010,165 @@ def cmd_cancel(args) -> int:
     print(f"Cancelled {killed} running task(s); sealed {sealed} live-feed events.")
     return 0
 
+# --- M2-T04: fixture suite scaffold (M3 prerequisite, observation only in M2) ---
+FIXTURES_ROOT = DIRECTOR_HOME / "fixtures"
+
+def evaluate_fixture_assertions(expected: dict, work_dir: Path) -> dict:
+    """Run structural assertions from expected.json against disk artifacts.
+    No LLM calls — D3 disk-truth wins. Returns {pass, per_assertion, reasons}.
+
+    Supported assertion types:
+      file_present: path on disk must exist and be non-empty.
+      byte_match:   file at path must contain literal `needle` substring.
+      json_schema:  file at path parses as JSON and contains all required_keys
+                    at top level.
+    """
+    per = []
+    for a in expected.get("assertions", []):
+        atype = a.get("type")
+        path = a.get("path", "")
+        reason = ""
+        ok = False
+        try:
+            p = Path(path)
+            if not p.is_absolute():
+                p = Path(work_dir) / p
+            if atype == "file_present":
+                ok = p.exists() and p.stat().st_size > 0
+                if not ok:
+                    reason = f"missing or empty: {path}"
+            elif atype == "byte_match":
+                needle = a.get("needle", "")
+                if not p.exists():
+                    reason = f"missing: {path}"
+                else:
+                    body = p.read_text(errors="replace")
+                    ok = needle in body
+                    if not ok:
+                        reason = f"needle not found: {needle[:60]!r}"
+            elif atype == "json_schema":
+                if not p.exists():
+                    reason = f"missing: {path}"
+                else:
+                    try:
+                        data = json.loads(p.read_text())
+                    except Exception as e:
+                        reason = f"parse error: {e}"
+                    else:
+                        required = a.get("required_keys", [])
+                        missing = [k for k in required if k not in (data if isinstance(data, dict) else {})]
+                        ok = not missing
+                        if missing:
+                            reason = f"missing keys: {missing}"
+            else:
+                reason = f"unknown assertion type: {atype}"
+        except Exception as e:
+            reason = f"assertion error: {e}"
+        per.append({"type": atype, "path": path, "ok": ok, "reason": reason})
+    overall = all(x["ok"] for x in per) if per else True
+    fail_reasons = [x["reason"] for x in per if not x["ok"] and x["reason"]]
+    return {"pass": overall, "per_assertion": per, "reasons": fail_reasons}
+
+def run_fixture(fixture_dir: Path, persona_id: str = "default",
+                dry_run_director: bool = False) -> dict:
+    """Execute a single fixture: optional setup.sh → Director run (or dry-run mock)
+    → assert expected.json against disk. Returns:
+       {fixture_id, status: pass|fail|setup-failure|missing-files, latency_sec, ...}.
+
+    M2 scope is observation only — no auto-tighten or auto-rollback fires from this
+    runner. M3 wires the rollback decision to the suite report's pass-rate signal.
+    """
+    import subprocess as _sp
+    import time as _time
+    fixture_dir = Path(fixture_dir)
+    fid = fixture_dir.name
+    started = _time.monotonic()
+    out = {"fixture_id": fid, "status": "fail",
+           "latency_sec": 0.0, "reasons": [], "persona": persona_id}
+    goal_path = fixture_dir / "goal.txt"
+    expected_path = fixture_dir / "expected.json"
+    if not goal_path.exists() or not expected_path.exists():
+        out["status"] = "missing-files"
+        out["reasons"].append(f"required goal.txt or expected.json missing in {fid}")
+        out["latency_sec"] = round(_time.monotonic() - started, 3)
+        return out
+    setup_sh = fixture_dir / "setup.sh"
+    if setup_sh.exists():
+        try:
+            r = _sp.run(["bash", str(setup_sh)], cwd=str(fixture_dir),
+                        capture_output=True, text=True, timeout=60)
+            if r.returncode != 0:
+                out["status"] = "setup-failure"
+                out["setup_exit_code"] = r.returncode
+                out["reasons"].append(f"setup.sh exit={r.returncode}: {r.stderr[-300:]}")
+                out["latency_sec"] = round(_time.monotonic() - started, 3)
+                return out
+        except Exception as e:
+            out["status"] = "setup-failure"
+            out["setup_exit_code"] = -1
+            out["reasons"].append(f"setup.sh error: {e}")
+            out["latency_sec"] = round(_time.monotonic() - started, 3)
+            return out
+    if not dry_run_director:
+        # Real Director invocation deferred to M3 enablement to avoid burning quota
+        # on every fixture run. Operator triggers a real run separately and points
+        # the runner at the produced artifacts.
+        out["reasons"].append("real Director run path is M3 work; dry_run_director=False is reserved")
+    try:
+        expected = json.loads(expected_path.read_text())
+    except Exception as e:
+        out["status"] = "fail"
+        out["reasons"].append(f"expected.json parse: {e}")
+        out["latency_sec"] = round(_time.monotonic() - started, 3)
+        return out
+    eval_result = evaluate_fixture_assertions(expected, work_dir=fixture_dir)
+    out["status"] = "pass" if eval_result["pass"] else "fail"
+    out["reasons"].extend(eval_result["reasons"])
+    out["per_assertion"] = eval_result["per_assertion"]
+    out["latency_sec"] = round(_time.monotonic() - started, 3)
+    return out
+
+def run_fixture_suite(domain_root: str, persona_id: str = "default",
+                      dry_run_director: bool = True) -> dict:
+    """Execute every fixture in a domain directory and aggregate the report.
+    Returns {domain, total, passed, failed, per_fixture: [...]}.
+    """
+    root = Path(domain_root)
+    fixtures = sorted([d for d in root.iterdir() if d.is_dir()]) if root.exists() else []
+    per = []
+    for fd in fixtures:
+        per.append(run_fixture(fd, persona_id=persona_id, dry_run_director=dry_run_director))
+    passed = sum(1 for r in per if r["status"] == "pass")
+    failed = sum(1 for r in per if r["status"] != "pass")
+    return {
+        "domain": root.name,
+        "total": len(per),
+        "passed": passed,
+        "failed": failed,
+        "per_fixture": per,
+    }
+
+def cmd_fixture(args) -> int:
+    """./director.py fixture run <domain> [--persona <id>]"""
+    if args.fixture_action != "run":
+        print(f"⚠️  bilinmeyen fixture action: {args.fixture_action}", file=sys.stderr)
+        return 1
+    domain_root = FIXTURES_ROOT / args.domain
+    if not domain_root.exists():
+        print(f"❌ fixture domain bulunamadı: {domain_root}", file=sys.stderr)
+        return 1
+    print(f"⏳ Fixture suite: {domain_root}")
+    report = run_fixture_suite(str(domain_root), persona_id=args.persona,
+                               dry_run_director=True)
+    print(f"\n{'fixture_id':<28} {'status':<14} {'latency':>8}  reason")
+    print("-" * 80)
+    for r in report["per_fixture"]:
+        reason = (r["reasons"][0] if r["reasons"] else "-")[:40]
+        print(f"{r['fixture_id']:<28} {r['status']:<14} {r['latency_sec']:>6.2f}s  {reason}")
+    print("-" * 80)
+    print(f"Total: {report['total']}, Passed: {report['passed']}, Failed: {report['failed']}")
+    return 0 if report["failed"] == 0 else 1
+
 def cmd_mnemonics_replay(args) -> int:
     """Replay fallback mnemonics records. Operator-triggered (never implicit)."""
     if not MNEMONICS_FALLBACK_PATH.exists():
@@ -2070,6 +2229,13 @@ def main() -> int:
     p_mr = sub.add_parser("mnemonics-replay",
                           help="Fallback dosyasındaki mnemonics kayıtlarını yeniden ingest dene (M2-T03)")
     p_mr.set_defaults(func=cmd_mnemonics_replay)
+
+    p_fx = sub.add_parser("fixture", help="Fixture suite koştur (M2-T04, observation only)")
+    fx_sub = p_fx.add_subparsers(dest="fixture_action", required=True)
+    p_fx_run = fx_sub.add_parser("run", help="Bir domain'deki fixture'ları sırayla koştur")
+    p_fx_run.add_argument("domain", help="Domain adı (örn: security)")
+    p_fx_run.add_argument("--persona", default="default", help="Persona ID")
+    p_fx.set_defaults(func=cmd_fixture)
 
     args = p.parse_args()
     return args.func(args)

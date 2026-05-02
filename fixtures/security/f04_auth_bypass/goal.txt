@@ -1,0 +1,1 @@
+input/api.py'daki /admin/users endpoint'inde authentication eksik. Bulgularını ve fix önerini finding.md'ye yaz.

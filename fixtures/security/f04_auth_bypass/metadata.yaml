@@ -1,0 +1,5 @@
+domain: security
+persona: security
+difficulty: easy
+ground_truth_source: hand-labeled by operator from /tmp/dir-sec smoke run 2026-05-02
+expected_finding: Auth bypass — /admin/users endpoint has no auth decorator

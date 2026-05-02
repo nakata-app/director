@@ -1,0 +1,7 @@
+{
+  "assertions": [
+    {"type": "file_present", "path": "finding.md"},
+    {"type": "byte_match", "path": "finding.md", "needle": "auth"},
+    {"type": "byte_match", "path": "finding.md", "needle": "decorator"}
+  ]
+}

@@ -1,0 +1,1 @@
+input/api.py'daki /profile/<user_id> endpoint'inde auth var ama IDOR riski olabilir. Authenticated kullanıcı başka bir user_id ile sorgu atabilir mi incele. Bulgularını finding.md'ye yaz.

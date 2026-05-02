@@ -1,0 +1,1 @@
+input/api.py'daki /transfer endpoint'inde CSRF koruması eksik mi incele. Bulgularını finding.md'ye yaz.

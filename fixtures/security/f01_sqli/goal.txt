@@ -1,0 +1,1 @@
+input/api.py'daki Flask endpoint'i SQL injection açısından incele. Bulduğun açığı kısa PoC ve tek-satır fix önerisiyle finding.md dosyasına yaz. Fixture working directory'sinin dışına dosya yazma.

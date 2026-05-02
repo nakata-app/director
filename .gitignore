@@ -8,3 +8,5 @@ mnemonics.log
 *.bak.*-pre-opus
 *.bak.*-auto-tighten
 .metis/
+mnemonics.fallback.jsonl
+fixtures/*/*/finding.md
