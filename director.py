@@ -1035,13 +1035,17 @@ def apply_tightened_critic(new_prompt: str) -> bool:
         print(f"⚠️  apply critic tighten failed: {e}", file=sys.stderr)
         return False
 
-def tighten_critic_if_drift(decisions: list[dict], dry_run: bool = True) -> dict:
+def tighten_critic_if_drift(decisions: list[dict], dry_run: bool = True,
+                             domain: str = "default") -> dict:
     """Drift gate + tighten + (optional) apply + log + mnemonics, atomic.
-    Returns {'fired', 'applied', 'old_len', 'new_len', 'quality'}.
+    Returns {'fired', 'applied', 'old_len', 'new_len', 'quality', 'domain', 'thresholds'}.
+    M3-T04: per-domain thresholds via DOMAIN_DRIFT_CONFIG_PATH.
     """
     quality = score_critic_quality(decisions)
-    fires = critic_drift_fires(quality["precision"], quality["recall"])
-    out = {"fired": fires, "applied": False, "old_len": 0, "new_len": 0, "quality": quality}
+    thresholds = domain_drift_thresholds(domain)
+    fires = critic_drift_fires(quality["precision"], quality["recall"], domain=domain)
+    out = {"fired": fires, "applied": False, "old_len": 0, "new_len": 0,
+           "quality": quality, "domain": domain, "thresholds": thresholds}
     if not fires:
         return out
     proposal = auto_tighten_critic(decisions)
@@ -1059,13 +1063,19 @@ def tighten_critic_if_drift(decisions: list[dict], dry_run: bool = True) -> dict
     if apply_tightened_critic(proposal["new"]):
         out["applied"] = True
         ts = datetime.now().strftime("%Y-%m-%d %H:%M")
+        # M3-T04 audit: log domain + threshold set that fired the event.
+        thr_audit = (
+            f"prec_floor={thresholds['critic_precision_floor']}, "
+            f"recall_floor={thresholds['critic_recall_floor']}"
+        )
         mnemonics_record(
-            f"[{ts}] director critic-tighten: precision={quality['precision']}, "
-            f"recall={quality['recall']}, n={quality['n_decisions']} | "
-            f"old={out['old_len']}c -> new={out['new_len']}c",
+            f"[{ts}] director critic-tighten: domain={domain} | thresholds=({thr_audit}) | "
+            f"precision={quality['precision']}, recall={quality['recall']}, "
+            f"n={quality['n_decisions']} | old={out['old_len']}c -> new={out['new_len']}c",
             ns="director",
         )
         append_evolution_log("critic-tighten", {
+            "domain": domain,
             "precision": quality["precision"], "recall": quality["recall"],
             "n": quality["n_decisions"],
             "old": out["old_len"], "new": out["new_len"],
@@ -1080,14 +1090,16 @@ def tighten_critic_if_drift(decisions: list[dict], dry_run: bool = True) -> dict
     return out
 
 def tighten_decomposer_if_drift(goal: str, plan: dict, baseline_avg: float = 4.0,
-                                 dry_run: bool = True) -> dict:
+                                 dry_run: bool = True, domain: str = "default") -> dict:
     """Drift gate + tighten + (optional) apply + log + mnemonics, atomic.
-    Returns {'fired': bool, 'applied': bool, 'old_len': int, 'new_len': int, 'signals': dict}.
-    Caller decides dry_run; CLI surface adds it later.
+    Returns {'fired', 'applied', 'old_len', 'new_len', 'signals', 'domain', 'thresholds'}.
+    M3-T04: per-domain thresholds via DOMAIN_DRIFT_CONFIG_PATH.
     """
     fid = score_decomposer_fidelity(goal, plan, baseline_avg)
-    fires = decomposer_drift_fires(fid["score"], fid["literal"])
-    out = {"fired": fires, "applied": False, "old_len": 0, "new_len": 0, "signals": fid}
+    thresholds = domain_drift_thresholds(domain)
+    fires = decomposer_drift_fires(fid["score"], fid["literal"], domain=domain)
+    out = {"fired": fires, "applied": False, "old_len": 0, "new_len": 0,
+           "signals": fid, "domain": domain, "thresholds": thresholds}
     if not fires:
         return out
     proposal = auto_tighten_decomposer(goal, plan)
@@ -1105,13 +1117,20 @@ def tighten_decomposer_if_drift(goal: str, plan: dict, baseline_avg: float = 4.0
     if apply_tightened_decomposer(proposal["new"]):
         out["applied"] = True
         ts = datetime.now().strftime("%Y-%m-%d %H:%M")
+        # M3-T04 audit: log domain + threshold set that fired the event.
+        thr_audit = (
+            f"score_floor={thresholds['decomposer_score_floor']}, "
+            f"literal_floor={thresholds['decomposer_literal_floor']}"
+        )
         mnemonics_record(
-            f"[{ts}] director decomposer-tighten: signals="
-            f"(score={fid['score']}, literal={fid['literal']}, exp={fid['expected']}, dev={fid['deviation']}) | "
+            f"[{ts}] director decomposer-tighten: domain={domain} | thresholds=({thr_audit}) | "
+            f"signals=(score={fid['score']}, literal={fid['literal']}, "
+            f"exp={fid['expected']}, dev={fid['deviation']}) | "
             f"old={out['old_len']}c -> new={out['new_len']}c",
             ns="director",
         )
         append_evolution_log("decomposer-tighten", {
+            "domain": domain,
             "score": fid["score"], "literal": fid["literal"],
             "old": out["old_len"], "new": out["new_len"],
         })
@@ -1124,12 +1143,15 @@ def tighten_decomposer_if_drift(goal: str, plan: dict, baseline_avg: float = 4.0
     return out
 
 def tighten_persona_with_rollback(persona_id: str, sample_output: str,
-                                   dry_run: bool = True) -> dict:
+                                   dry_run: bool = True,
+                                   domain: str = "default") -> dict:
     """M3-T03 persona wrapper: tighten + apply + post-apply regression check.
     Mirrors the decomposer/critic wrappers but for persona descriptions.
-    Returns {'fired', 'applied', 'old_len', 'new_len', 'rollback'}.
+    M3-T04: domain forwarded to mnemonics audit log.
+    Returns {'fired', 'applied', 'old_len', 'new_len', 'rollback', 'domain'}.
     """
-    out = {"fired": False, "applied": False, "old_len": 0, "new_len": 0}
+    out = {"fired": False, "applied": False, "old_len": 0, "new_len": 0,
+           "domain": domain}
     proposal = auto_tighten_persona(persona_id, sample_output)
     if not proposal:
         return out
@@ -1146,11 +1168,12 @@ def tighten_persona_with_rollback(persona_id: str, sample_output: str,
         out["applied"] = True
         ts = datetime.now().strftime("%Y-%m-%d %H:%M")
         mnemonics_record(
-            f"[{ts}] director persona-tighten: persona={persona_id} | "
+            f"[{ts}] director persona-tighten: domain={domain} | persona={persona_id} | "
             f"old={out['old_len']}c -> new={out['new_len']}c",
             ns="director",
         )
         append_evolution_log("persona-tighten", {
+            "domain": domain,
             "persona": persona_id,
             "old": out["old_len"], "new": out["new_len"],
         })
@@ -1160,6 +1183,113 @@ def tighten_persona_with_rollback(persona_id: str, sample_output: str,
             before_baselines=before_baselines,
             event_key=event_key,
         )
+    return out
+
+
+def tighten_persona_if_drift(signals: dict, a_state: dict,
+                              sample_log_root: Path | None = None,
+                              dry_run: bool = True,
+                              domain: str = "default") -> dict:
+    """M3-T04 persona wrapper: per-domain drift gate + target selection + tighten + apply.
+    Reads thresholds from DOMAIN_DRIFT_CONFIG_PATH (no hardcoded floors).
+
+    signals dict must carry:
+      completion_drop, log_inflation, avg_fidelity, absolute_completion_fail,
+      a_fail_count.
+    a_state must carry tasks list with persona_id + persona_fidelity entries.
+
+    Returns {'fired', 'applied', 'old_len', 'new_len', 'target_persona',
+             'reasons', 'domain', 'thresholds', 'rollback'}.
+    """
+    thresholds = domain_drift_thresholds(domain)
+    cd = float(signals.get("completion_drop", 0.0))
+    li = float(signals.get("log_inflation", 0.0))
+    fid = float(signals.get("avg_fidelity", 10.0))
+    abs_fail = bool(signals.get("absolute_completion_fail", False))
+    a_fail = int(signals.get("a_fail_count", 0))
+
+    cd_floor = thresholds["persona_completion_drop_threshold"]
+    li_floor = thresholds["persona_log_inflation_threshold"]
+    fid_floor = thresholds["persona_fidelity_floor"]
+
+    reasons: list[str] = []
+    if cd > cd_floor:
+        reasons.append(f"comp_drop={cd:.2f}>{cd_floor}")
+    if fid < fid_floor:
+        reasons.append(f"fid={fid:.1f}<{fid_floor}")
+    if li > li_floor and a_fail > 0:
+        reasons.append(f"log_infl={li:.2f}>{li_floor}")
+    if abs_fail:
+        reasons.append("absolute_completion_fail")
+
+    fired = bool(reasons)
+    out = {
+        "fired": fired, "applied": False, "old_len": 0, "new_len": 0,
+        "target_persona": None, "reasons": reasons,
+        "domain": domain, "thresholds": thresholds,
+    }
+    if not fired:
+        return out
+
+    # Target persona selection: worst fidelity or any failed task.
+    impacted: dict[str, list[dict]] = {}
+    for t in a_state.get("tasks", []):
+        pid = t.get("persona_id")
+        if not pid or pid == "default":
+            continue
+        impacted.setdefault(pid, []).append(t)
+    if not impacted:
+        return out
+    target_pid = None
+    worst_score = 11.0
+    for pid, tasks in impacted.items():
+        fids = [t.get("persona_fidelity", {}).get("score", 10)
+                for t in tasks if t.get("persona_fidelity")]
+        avg_pid_fid = sum(fids) / len(fids) if fids else 10.0
+        has_fail = any(t.get("status") == "failed" for t in tasks)
+        if has_fail or avg_pid_fid < worst_score:
+            target_pid = pid
+            worst_score = avg_pid_fid
+    if not target_pid:
+        return out
+    out["target_persona"] = target_pid
+
+    # Pull a sample log for the target persona's task, if a root path was given.
+    sample_log = ""
+    if sample_log_root is not None:
+        sample_task = next(
+            (t for t in a_state.get("tasks", []) if t.get("persona_id") == target_pid),
+            None,
+        )
+        if sample_task:
+            log_path = sample_log_root / "logs" / f"{sample_task['id']}.log"
+            if log_path.exists():
+                try:
+                    sample_log = log_path.read_text()[:3000]
+                except Exception:
+                    sample_log = ""
+
+    # Audit log (drift-fire event, regardless of dry_run / apply outcome).
+    ts = datetime.now().strftime("%Y-%m-%d %H:%M")
+    thr_audit = (
+        f"comp_drop_floor={cd_floor}, log_infl_floor={li_floor}, "
+        f"fid_floor={fid_floor}"
+    )
+    mnemonics_record(
+        f"[{ts}] director persona-drift-gate: domain={domain} | thresholds=({thr_audit}) | "
+        f"reasons=({', '.join(reasons)}) | target={target_pid} | "
+        f"signals=(cd={cd:.2f}, li={li:.2f}, fid={fid:.1f}, abs_fail={abs_fail})",
+        ns="director",
+    )
+
+    sub = tighten_persona_with_rollback(
+        target_pid, sample_log, dry_run=dry_run, domain=domain,
+    )
+    out["old_len"] = sub["old_len"]
+    out["new_len"] = sub["new_len"]
+    out["applied"] = sub["applied"]
+    if "rollback" in sub:
+        out["rollback"] = sub["rollback"]
     return out
 
 def append_evolution_log(event_kind: str, details: dict) -> None:
@@ -1990,86 +2120,66 @@ def cmd_ab(args) -> int:
         mnemonics_record(verdict_text, ns="director")
 
         # --- Auto-tightener loop (closed-loop self-improvement primitive) ---
-        # Trigger: persona-on incomplete vs persona-off OR low fidelity OR verbose drift
+        # Trigger: persona-on incomplete vs persona-off OR low fidelity OR verbose drift.
+        # M3-T04: drift gate thresholds come from domain_drift_thresholds() (per-domain
+        # config) instead of hardcoded floors. tighten_persona_if_drift wrapper handles
+        # gate evaluation, target selection, mnemonics audit, and apply.
         a_state = arms[0][2]  # A persona-on state
         a_done_ratio = a["done"] / max(1, len(a_state["tasks"]))
         b_done_ratio = b["done"] / max(1, len(arms[1][2]["tasks"]))
         completion_drop = b_done_ratio - a_done_ratio  # positive = persona-on lost ground
         log_inflation = (a["avg_log"] - b["avg_log"]) / max(1, b["avg_log"])  # positive = persona-on verbose
-        # Use fidelity if known, else neutral 10. Use explicit `is None` to avoid
-        # the `0 or 10` Python falsy-coalesce trap (a legitimate 0 fidelity must NOT
+        # Use fidelity if known, else neutral 10. Explicit `is None` to avoid the
+        # `0 or 10` Python falsy-coalesce trap (a legitimate 0 fidelity must NOT
         # be silently promoted to 10).
         avg_fid = a.get("fidelity") if a.get("fidelity") is not None else 10
         # Absolute completion-floor: if persona-on cannot finish at least half its
         # tasks, fire drift unconditionally regardless of B-arm outcome. Catches the
         # pathological case where both arms fail but A failed catastrophically.
         absolute_completion_fail = a_done_ratio < 0.5 and len(a_state["tasks"]) > 1
-        drift_suspected = (
-            (completion_drop > 0.15)
-            or (avg_fid < 7)
-            or (log_inflation > 0.30 and a["fail"] > 0)
-            or absolute_completion_fail
+
+        domain = getattr(args, "domain", "default") or "default"
+        signals = {
+            "completion_drop": completion_drop,
+            "log_inflation": log_inflation,
+            "avg_fidelity": avg_fid,
+            "absolute_completion_fail": absolute_completion_fail,
+            "a_fail_count": a["fail"],
+        }
+        gate = tighten_persona_if_drift(
+            signals,
+            a_state,
+            sample_log_root=arms[0][1],
+            dry_run=not getattr(args, "auto_tighten", False),
+            domain=domain,
         )
-        if drift_suspected:
-            # Find most-impacted persona from A arm tasks
-            impacted = {}
-            for t in a_state["tasks"]:
-                pid = t.get("persona_id")
-                if not pid or pid == "default":
-                    continue
-                impacted.setdefault(pid, []).append(t)
-            if impacted:
-                # Pick persona with worst fidelity or any failed task
-                target_pid = None
-                worst_score = 11
-                for pid, tasks in impacted.items():
-                    fids = [t.get("persona_fidelity", {}).get("score", 10) for t in tasks if t.get("persona_fidelity")]
-                    avg_pid_fid = sum(fids) / len(fids) if fids else 10
-                    has_fail = any(t["status"] == "failed" for t in tasks)
-                    if has_fail or avg_pid_fid < worst_score:
-                        target_pid = pid
-                        worst_score = avg_pid_fid
-                if target_pid:
-                    sample_task = next((t for t in a_state["tasks"] if t.get("persona_id") == target_pid), None)
-                    sample_log = ""
-                    if sample_task:
-                        log_path = arms[0][1] / "logs" / f"{sample_task['id']}.log"
-                        if log_path.exists():
-                            sample_log = log_path.read_text()[:3000]
-                    drift_reasons = []
-                    if completion_drop > 0.15: drift_reasons.append(f"comp_drop={completion_drop:.2f}")
-                    if avg_fid < 7: drift_reasons.append(f"fid={avg_fid:.1f}")
-                    if log_inflation > 0.30 and a["fail"] > 0: drift_reasons.append(f"log_infl={log_inflation:.2f}")
-                    if absolute_completion_fail: drift_reasons.append(f"a_done_ratio={a_done_ratio:.2f}<0.5")
-                    print(f"\n🔁 Auto-tightener: drift suspected ({', '.join(drift_reasons)})")
-                    print(f"   Hedef persona: {target_pid} (worst fidelity={worst_score:.1f})")
-                    speak(f"Verbose drift tespit edildi, persona {target_pid} sertleştiriliyor.")
-                    proposal = auto_tighten_persona(target_pid, sample_log)
-                    if proposal:
-                        print(f"\n   --- ESKİ ({len(proposal['old'])}c) ---")
-                        print(f"   {proposal['old']}")
-                        print(f"\n   --- ÖNERİLEN ({len(proposal['new'])}c) ---")
-                        print(f"   {proposal['new']}")
-                        if getattr(args, "auto_tighten", False):
-                            ok = apply_tightened_persona(target_pid, proposal["new"])
-                            if ok:
-                                print(f"\n   ✅ persona '{target_pid}' güncellendi (yedek alındı)")
-                                speak(f"Persona {target_pid} otomatik sertleştirildi.")
-                                mnemonics_record(
-                                    f"[{datetime.now().strftime('%Y-%m-%d %H:%M')}] director auto-tighten: "
-                                    f"persona={target_pid} | drift_signals=(comp_drop={completion_drop:.2f}, "
-                                    f"fid={avg_fid:.1f}, log_infl={log_inflation:.2f}) | "
-                                    f"old={len(proposal['old'])}c → new={len(proposal['new'])}c",
-                                    ns="director",
-                                )
-                            else:
-                                print(f"\n   ❌ apply başarısız")
-                        else:
-                            print(f"\n   💡 Uygulamak için: --auto-tighten flag'i ile çalıştır")
+        if gate["fired"]:
+            reasons_str = ", ".join(gate["reasons"])
+            print(f"\n🔁 Auto-tightener: drift suspected (domain={domain}; {reasons_str})")
+            target_pid = gate["target_persona"]
+            if target_pid is None:
+                # Drift fired but no eligible persona on A-arm (all default).
+                print(f"   ⚠ drift gate fired, eligible persona yok (A-arm hepsi default)")
+            else:
+                print(f"   Hedef persona: {target_pid}")
+                speak(f"Verbose drift tespit edildi, persona {target_pid} sertleştiriliyor.")
+                if gate["old_len"] == 0 and gate["new_len"] == 0:
+                    print(f"   ⚠ tightener öneri üretemedi (uzun/kısa/aynı/parse fail)")
+                else:
+                    print(f"\n   --- ESKİ ({gate['old_len']}c) → ÖNERİLEN ({gate['new_len']}c) ---")
+                    if gate["applied"]:
+                        print(f"\n   ✅ persona '{target_pid}' güncellendi (yedek alındı, audit log atıldı)")
+                        speak(f"Persona {target_pid} otomatik sertleştirildi.")
+                    elif not getattr(args, "auto_tighten", False):
+                        print(f"\n   💡 Uygulamak için: --auto-tighten flag'i ile çalıştır")
                     else:
-                        print(f"   ⚠ tightener öneri üretemedi (uzun/kısa/aynı/parse fail)")
+                        print(f"\n   ❌ apply başarısız")
         else:
-            print(f"\n   ✓ drift sinyali yok (comp_drop={completion_drop:.2f}, fid={avg_fid:.1f}, log_infl={log_inflation:.2f})")
+            print(
+                f"\n   ✓ drift sinyali yok (domain={domain}; "
+                f"comp_drop={completion_drop:.2f}, fid={avg_fid:.1f}, "
+                f"log_infl={log_inflation:.2f})"
+            )
     return 0
 
 def cmd_attach(args) -> int:
@@ -2533,6 +2643,8 @@ def main() -> int:
                       help="Shell command her arm öncesi koşturulur (fixture izolasyonu). Örn: 'rm -rf /tmp/x && cp -R fixture/ /tmp/x'")
     p_ab.add_argument("--auto-tighten", action="store_true",
                       help="Drift tespitinde persona description'ı V4 Pro ile sertleştir ve personas.json'a yaz (yedek alınır). Closed-loop self-improvement.")
+    p_ab.add_argument("--domain", default="default",
+                      help="Drift threshold seti (M3-T04). domain_drift_config.json'daki key (security/refactor/design/...) — yoksa default.")
     p_ab.set_defaults(func=cmd_ab)
 
     p_mr = sub.add_parser("mnemonics-replay",

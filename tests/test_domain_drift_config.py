@@ -160,3 +160,144 @@ with tempfile.TemporaryDirectory() as td:
             director.critic_drift_fires(0.7, 0.9, domain="default") is True)
     finally:
         director.DOMAIN_DRIFT_CONFIG_PATH = saved
+
+
+# ----- Test 6: tighten_persona_if_drift gate honors per-domain thresholds -----
+print()
+print("=" * 60)
+print("Test 6: persona drift wrapper uses per-domain thresholds (no LLM)")
+print("=" * 60)
+# Suppress LLM tightener so the wrapper short-circuits cleanly: target_pid
+# is found, but auto_tighten_persona returns None, so applied=False, no API call.
+saved_tightener = director.auto_tighten_persona
+director.auto_tighten_persona = lambda pid, log: None
+try:
+    with tempfile.TemporaryDirectory() as td:
+        cfg = {
+            "loose": {
+                "persona_completion_drop_threshold": 0.50,
+                "persona_log_inflation_threshold": 0.99,
+                "persona_fidelity_floor": 1.0,
+            },
+            "tight": {
+                "persona_completion_drop_threshold": 0.05,
+                "persona_log_inflation_threshold": 0.05,
+                "persona_fidelity_floor": 9.5,
+            },
+        }
+        cfg_path = Path(td) / "domain_drift_config.json"
+        cfg_path.write_text(json.dumps(cfg))
+        saved = director.DOMAIN_DRIFT_CONFIG_PATH
+        director.DOMAIN_DRIFT_CONFIG_PATH = cfg_path
+        try:
+            # Borderline signals: comp_drop 0.20 (>0.15 default, <0.50 loose, >0.05 tight),
+            # log_infl 0.40 (>0.30 default, <0.99 loose, >0.05 tight),
+            # avg_fid 8.0 (≥7.0 default → no fid trigger; ≥1.0 loose; <9.5 tight → fires).
+            sig = {
+                "completion_drop": 0.20,
+                "log_inflation": 0.40,
+                "avg_fidelity": 8.0,
+                "absolute_completion_fail": False,
+                "a_fail_count": 1,
+            }
+            a_state = {
+                "tasks": [
+                    {"id": "t1", "persona_id": "writer", "status": "failed",
+                     "persona_fidelity": {"score": 6}},
+                    {"id": "t2", "persona_id": "writer", "status": "done",
+                     "persona_fidelity": {"score": 7}},
+                ]
+            }
+            res_default = director.tighten_persona_if_drift(sig, a_state, dry_run=True, domain="default")
+            _ok("default fires (comp_drop 0.20>0.15, log_infl 0.40>0.30)",
+                res_default["fired"] is True)
+            _ok("default thresholds in audit", res_default["thresholds"]["persona_completion_drop_threshold"] == 0.15)
+            _ok("default target=writer", res_default["target_persona"] == "writer")
+
+            res_loose = director.tighten_persona_if_drift(sig, a_state, dry_run=True, domain="loose")
+            _ok("loose suppresses (all signals under loose floors)",
+                res_loose["fired"] is False)
+            _ok("loose thresholds in audit", res_loose["thresholds"]["persona_completion_drop_threshold"] == 0.50)
+
+            res_tight = director.tighten_persona_if_drift(sig, a_state, dry_run=True, domain="tight")
+            _ok("tight fires (fid 8.0<9.5 plus comp_drop and log_infl over)",
+                res_tight["fired"] is True)
+            _ok("tight reasons include fid", any("fid=" in r for r in res_tight["reasons"]))
+            _ok("tight reasons include comp_drop", any("comp_drop=" in r for r in res_tight["reasons"]))
+        finally:
+            director.DOMAIN_DRIFT_CONFIG_PATH = saved
+finally:
+    director.auto_tighten_persona = saved_tightener
+
+
+# ----- Test 7: wrapper return shape carries domain + thresholds (audit) -----
+print()
+print("=" * 60)
+print("Test 7: tighten_*_if_drift wrappers return domain + thresholds (audit)")
+print("=" * 60)
+# Suppress real scoring + tightener calls (no API, no I/O).
+saved_score_critic = director.score_critic_quality
+saved_score_decomp = director.score_decomposer_fidelity
+saved_auto_critic = director.auto_tighten_critic
+saved_auto_decomp = director.auto_tighten_decomposer
+director.score_critic_quality = lambda decisions: {
+    "precision": 1.0, "recall": 1.0, "n_decisions": 0,
+    "n_pass_calls": 0, "n_truth_pass": 0,
+}
+director.score_decomposer_fidelity = lambda goal, plan, baseline_avg=4.0: {
+    "score": 10.0, "literal": 1.0, "expected": 1.0, "deviation": 0.0,
+}
+director.auto_tighten_critic = lambda d: None
+director.auto_tighten_decomposer = lambda g, p: None
+try:
+    with tempfile.TemporaryDirectory() as td:
+        cfg = {"audit_dom": {"_doc": "audit shape test", "decomposer_score_floor": 6.0}}
+        cfg_path = Path(td) / "domain_drift_config.json"
+        cfg_path.write_text(json.dumps(cfg))
+        saved = director.DOMAIN_DRIFT_CONFIG_PATH
+        director.DOMAIN_DRIFT_CONFIG_PATH = cfg_path
+        try:
+            r_crit = director.tighten_critic_if_drift([], dry_run=True, domain="audit_dom")
+            _ok("critic wrapper carries domain", r_crit["domain"] == "audit_dom")
+            _ok("critic wrapper carries thresholds dict",
+                isinstance(r_crit.get("thresholds"), dict)
+                and "critic_precision_floor" in r_crit["thresholds"])
+
+            r_dec = director.tighten_decomposer_if_drift("g", {"tasks": []}, dry_run=True, domain="audit_dom")
+            _ok("decomposer wrapper carries domain", r_dec["domain"] == "audit_dom")
+            _ok("decomposer wrapper threshold respects override",
+                r_dec["thresholds"]["decomposer_score_floor"] == 6.0)
+        finally:
+            director.DOMAIN_DRIFT_CONFIG_PATH = saved
+finally:
+    director.score_critic_quality = saved_score_critic
+    director.score_decomposer_fidelity = saved_score_decomp
+    director.auto_tighten_critic = saved_auto_critic
+    director.auto_tighten_decomposer = saved_auto_decomp
+
+
+# ----- Test 8: persona drift wrapper, no impacted persona → no target -----
+print()
+print("=" * 60)
+print("Test 8: persona drift fires but no eligible persona on A-arm")
+print("=" * 60)
+saved_tightener = director.auto_tighten_persona
+director.auto_tighten_persona = lambda pid, log: None
+try:
+    sig = {
+        "completion_drop": 0.99, "log_inflation": 0.99,
+        "avg_fidelity": 0.0, "absolute_completion_fail": True,
+        "a_fail_count": 5,
+    }
+    # All tasks pinned to default persona → impacted dict empty.
+    a_state = {"tasks": [
+        {"id": "t1", "persona_id": "default", "status": "failed"},
+        {"id": "t2", "persona_id": None, "status": "failed"},
+    ]}
+    res = director.tighten_persona_if_drift(sig, a_state, dry_run=True, domain="default")
+    _ok("gate fires", res["fired"] is True)
+    _ok("target_persona None when no eligible", res["target_persona"] is None)
+    _ok("applied False", res["applied"] is False)
+    _ok("reasons populated", len(res["reasons"]) >= 3)
+finally:
+    director.auto_tighten_persona = saved_tightener
