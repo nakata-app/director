@@ -53,7 +53,7 @@ Four milestones, sequenced. Each milestone has explicit acceptance criteria. Ski
 - Auto-rollback: if a tightened persona's fixture pass rate drops below the previous version, restore from backup automatically and log the rollback.
 - Per-domain drift signals can be tuned independently (security may tolerate more verbose output than refactor).
 
-**Status:** in progress. Security (5 fixtures) landed in M2-T04. T01 (refactor, 5 fixtures + dedicated test) landed 2026-05-03 01:00, 35/35 sub-assertion green. T02 (design, 5 fixtures + dedicated test) landed 2026-05-03 01:25, 38/38 sub-assertion green. T03 (auto-rollback wiring, HIGH blast radius) landed 2026-05-03 01:50, 19/19 sub-assertion green, live simulation passed for both healthy and synthetic-regression scenarios, cross-family Llama 3.3 review verdict PASS on all five acceptance rules. T04 (per-domain drift tuning) remains.
+**Status:** **CLOSED** as of 2026-05-03 02:35. Security (5 fixtures) landed in M2-T04. T01 (refactor, 5 fixtures + dedicated test) landed 2026-05-03 01:00, 35/35 sub-assertion green. T02 (design, 5 fixtures + dedicated test) landed 2026-05-03 01:25, 38/38 sub-assertion green. T03 (auto-rollback wiring, HIGH blast radius) landed 2026-05-03 01:50, 19/19 sub-assertion green, live simulation passed for both healthy and synthetic-regression scenarios, cross-family Llama 3.3 review verdict PASS on all five acceptance rules. T04 (per-domain drift tuning) landed 2026-05-03 02:35 across two commits: c4052dc (helper + drift_fires signatures) + ddd522f follow-up (full DoD: three tightener wrappers reading per-domain thresholds, mnemonics audit log per fired event with domain + threshold set, cmd_ab inline floors replaced by tighten_persona_if_drift wrapper, `director ab --domain <name>` CLI). 41/41 in domain-config test, cumulative 217/0 across 9 suites. Llama 3.3 review verdict PASS, RISKS none on both commits.
 
 ## M4: Production embedding + community
 
@@ -65,7 +65,13 @@ Four milestones, sequenced. Each milestone has explicit acceptance criteria. Ski
 - Operator playbook (`OPERATOR.md`) is sufficient for a third party to debug a stuck run, audit an evolution event, and roll back a bad tighten.
 - Cost cap and budget reporting are implemented and surfaced (`DIRECTOR_DAILY_USD_CAP`).
 
-**Status:** not started.
+**Status:** in progress (M3 closed 2026-05-03 02:35; M4-T01 daily USD cap underway).
+
+**Ticket sequencing for M4 (chosen 2026-05-03):**
+- T01: Daily USD cap + budget reporting (`DIRECTOR_DAILY_USD_CAP`). Anti-pattern guard: never expose `run` / `ab` to a downstream product without a hard spend ceiling. Multi-model pricing table covering Opus, Sonnet/Haiku, V4 Pro, NIM Llama 3.3, DeepSeek. `director budget` CLI for today/yesterday/by-model breakdown.
+- T02: Operator playbook expansion (debug stuck run, audit evolution event, roll back a bad tighten via fixture re-replay).
+- T03: Programmatic Director API (library entry points for `run` / `ab` / `tighten_*_if_drift`) so a downstream product can embed Director without subprocess.
+- T04: External contributor flow, persona/signal/domain authoring guide + a sample PR that a fresh contributor can land end-to-end.
 
 ## Sequencing rules
 

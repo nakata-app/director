@@ -52,6 +52,191 @@ OPUS_MODEL = "claude-opus-4-7"
 OPUS_DAILY_LIMIT = int(os.environ.get("DIRECTOR_OPUS_DAILY_LIMIT", "4"))
 OPUS_QUOTA_PATH = DIRECTOR_HOME / "opus_quota.json"
 
+# --- M4-T01: daily USD cap + multi-model usage tracking ---
+# DAILY_USD_CAP <= 0 disables the gate. Default $5/day mirrors Atakan's
+# ad-hoc Sonnet/Opus testing ceiling; production deployments override.
+DAILY_USD_CAP = float(os.environ.get("DIRECTOR_DAILY_USD_CAP", "5.0"))
+USAGE_LOG_PATH = DIRECTOR_HOME / "director_usage.jsonl"
+OPUS_USAGE_PATH = DIRECTOR_HOME / "opus_usage.jsonl"  # legacy, read-only on aggregation
+USD_CAP_NOTICE_FLAG = "usd_cap_blocked_date"  # key in opus_quota.json (mnemonics throttle)
+
+# Per-million-token pricing. Last verified: 2026-05-03 (Atakan).
+# cache_read / cache_write fields default to 0 if the API does not surface them.
+MODEL_PRICING: dict[str, dict[str, float]] = {
+    # Anthropic — public list pricing for Claude 4 tier.
+    "claude-opus-4-7": {
+        "input_per_million": 15.0, "output_per_million": 75.0,
+        "cache_read_per_million": 1.50, "cache_write_per_million": 18.75,
+    },
+    "claude-sonnet-4-6": {
+        "input_per_million": 3.0, "output_per_million": 15.0,
+        "cache_read_per_million": 0.30, "cache_write_per_million": 3.75,
+    },
+    "claude-haiku-4-5-20251001": {
+        "input_per_million": 1.0, "output_per_million": 5.0,
+        "cache_read_per_million": 0.10, "cache_write_per_million": 1.25,
+    },
+    # NVIDIA NIM — technically free for low-volume; values are conservative
+    # public-paid-equivalents so the cap fires before silent overrun.
+    "deepseek-ai/deepseek-v4-pro": {
+        "input_per_million": 0.27, "output_per_million": 1.10,
+        "cache_read_per_million": 0.0, "cache_write_per_million": 0.0,
+    },
+    "meta/llama-3.3-70b-instruct": {
+        "input_per_million": 0.59, "output_per_million": 0.79,
+        "cache_read_per_million": 0.0, "cache_write_per_million": 0.0,
+    },
+    # DeepSeek native API.
+    "deepseek-chat": {
+        "input_per_million": 0.27, "output_per_million": 1.10,
+        "cache_read_per_million": 0.0, "cache_write_per_million": 0.0,
+    },
+    "deepseek-v4-pro": {  # alias used in NIM_MODEL strings stripped of provider.
+        "input_per_million": 0.27, "output_per_million": 1.10,
+        "cache_read_per_million": 0.0, "cache_write_per_million": 0.0,
+    },
+}
+
+
+def cost_for_call(model: str, input_tokens: int, output_tokens: int,
+                   cache_read: int = 0, cache_write: int = 0) -> float:
+    """USD estimate for one paid LLM call. Pure: no I/O. Unknown models → 0.0
+    plus a single stderr warning so the operator notices the gap."""
+    pricing = MODEL_PRICING.get(model)
+    if pricing is None:
+        print(f"⚠ cost_for_call: unknown model '{model}', returning 0.0",
+              file=sys.stderr)
+        return 0.0
+    cost = (
+        input_tokens * pricing.get("input_per_million", 0.0)
+        + output_tokens * pricing.get("output_per_million", 0.0)
+        + cache_read * pricing.get("cache_read_per_million", 0.0)
+        + cache_write * pricing.get("cache_write_per_million", 0.0)
+    ) / 1_000_000.0
+    return float(cost)
+
+
+def record_usage(model: str, usage: dict) -> None:
+    """Append one usage line to USAGE_LOG_PATH. Best-effort: any disk error
+    or parse failure must not break the caller. Anthropic-style usage dict
+    keys (input_tokens, output_tokens, cache_*_input_tokens) are normalized."""
+    try:
+        in_tok = int(usage.get("input_tokens", 0) or 0)
+        out_tok = int(usage.get("output_tokens", 0) or 0)
+        cache_read = int(
+            usage.get("cache_read_input_tokens",
+                      usage.get("cache_read", 0)) or 0
+        )
+        cache_write = int(
+            usage.get("cache_creation_input_tokens",
+                      usage.get("cache_write", 0)) or 0
+        )
+        cost = cost_for_call(model, in_tok, out_tok, cache_read, cache_write)
+        line = json.dumps({
+            "ts": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+            "model": model,
+            "input_tokens": in_tok,
+            "output_tokens": out_tok,
+            "cache_read": cache_read,
+            "cache_write": cache_write,
+            "cost_usd_est": round(cost, 6),
+        })
+        with open(USAGE_LOG_PATH, "a") as f:
+            f.write(line + "\n")
+    except Exception as e:
+        # D6: visibility over silence, but do not crash the call site.
+        try:
+            print(f"⚠ record_usage failed: {e}", file=sys.stderr)
+        except Exception:
+            pass
+
+
+def _iter_usage_lines(path: Path):
+    """Yield parsed usage JSONL records from path. Missing file → empty.
+    Malformed lines are skipped (best-effort)."""
+    if not path.exists():
+        return
+    try:
+        with open(path) as f:
+            for line in f:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    yield json.loads(line)
+                except Exception:
+                    continue
+    except Exception:
+        return
+
+
+def daily_usd_spent(date: str | None = None) -> float:
+    """Aggregate cost_usd_est across legacy (opus_usage.jsonl) and new
+    (director_usage.jsonl) JSONL files for the given UTC date.
+    date=None → today (UTC). Records without a parseable ts or cost are skipped."""
+    if date is None:
+        date = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+    total = 0.0
+    for path in (OPUS_USAGE_PATH, USAGE_LOG_PATH):
+        for rec in _iter_usage_lines(path):
+            ts = rec.get("ts", "")
+            if not ts.startswith(date):
+                continue
+            try:
+                total += float(rec.get("cost_usd_est", 0.0) or 0.0)
+            except Exception:
+                continue
+    return total
+
+
+def daily_usd_cap_blocks(estimate_usd: float = 0.0) -> bool:
+    """True iff a paid call of `estimate_usd` would push today over DAILY_USD_CAP.
+    Cap <= 0 disables the gate (production opt-out path)."""
+    cap = DAILY_USD_CAP
+    if cap is None or cap <= 0:
+        return False
+    return (daily_usd_spent() + max(0.0, float(estimate_usd))) >= cap
+
+
+def assert_under_daily_cap(estimate_usd: float = 0.0) -> None:
+    """Raise RuntimeError if today's spend (+ estimate) would breach the cap.
+    Records a single mnemonics audit line per day on first block (throttled
+    via opus_quota.json so Director doesn't spam the audit channel)."""
+    if not daily_usd_cap_blocks(estimate_usd):
+        return
+    spent = daily_usd_spent()
+    cap = DAILY_USD_CAP
+    today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+    # Throttle the mnemonics notice to once per day.
+    try:
+        data = {}
+        if OPUS_QUOTA_PATH.exists():
+            data = json.loads(OPUS_QUOTA_PATH.read_text() or "{}")
+        already_noticed = (
+            data.get(USD_CAP_NOTICE_FLAG) == today
+        )
+        if not already_noticed:
+            try:
+                mnemonics_record(
+                    f"[{datetime.now().strftime('%Y-%m-%d %H:%M')}] director usd-cap-blocked: "
+                    f"spent=${spent:.4f} cap=${cap:.2f} estimate=${estimate_usd:.4f}",
+                    ns="director",
+                )
+            except Exception:
+                pass
+            data[USD_CAP_NOTICE_FLAG] = today
+            try:
+                OPUS_QUOTA_PATH.write_text(json.dumps(data))
+            except Exception:
+                pass
+    except Exception:
+        pass
+    raise RuntimeError(
+        f"USD cap reached: ${spent:.4f} spent / ${cap:.2f} cap "
+        f"(estimate ${estimate_usd:.4f}). Override via DIRECTOR_DAILY_USD_CAP=0 "
+        f"to disable, or wait until UTC midnight."
+    )
+
 # --- ElevenLabs TTS (Mythos v2 = TR Ultron clone) ---
 ELEVENLABS_API_KEY = os.environ.get("ELEVENLABS_API_KEY", "")
 ELEVENLABS_VOICE_ID = os.environ.get("DIRECTOR_VOICE_ID", "o7NAQIWE4USENtam8Vkx")  # Mythos v2
@@ -419,6 +604,10 @@ def load_critic_prompt() -> str:
 TASK_CRITIC_PROMPT = load_critic_prompt()
 
 def _post_chat(url: str, model: str, key: str, messages: list[dict]) -> str:
+    # M4-T01: every paid call passes the cap gate before the request hits the
+    # network. Estimate is 0 (we don't know token count pre-flight); the gate
+    # fires only when prior spend already meets/exceeds the cap.
+    assert_under_daily_cap(estimate_usd=0.0)
     body = {
         "model": model,
         "messages": messages,
@@ -433,6 +622,21 @@ def _post_chat(url: str, model: str, key: str, messages: list[dict]) -> str:
     )
     with urllib.request.urlopen(req, timeout=120) as resp:
         data = json.loads(resp.read())
+    # M4-T01: post-flight usage tracker (best-effort). OpenAI-compatible APIs
+    # surface usage under "usage": {"prompt_tokens": int, "completion_tokens": int}.
+    raw_usage = data.get("usage") or {}
+    if raw_usage:
+        record_usage(model, {
+            "input_tokens": raw_usage.get("prompt_tokens", 0)
+                            or raw_usage.get("input_tokens", 0),
+            "output_tokens": raw_usage.get("completion_tokens", 0)
+                             or raw_usage.get("output_tokens", 0),
+            # OpenAI-compat APIs may surface cache fields under prompt_tokens_details.
+            "cache_read_input_tokens": (
+                raw_usage.get("prompt_tokens_details", {}).get("cached_tokens", 0)
+                if isinstance(raw_usage.get("prompt_tokens_details"), dict) else 0
+            ),
+        })
     return data["choices"][0]["message"]["content"].strip()
 
 def _is_deepseek_fallback_error(e: Exception) -> bool:
@@ -486,7 +690,15 @@ def _opus_quota_increment() -> None:
         pass
 
 def opus_quota_available() -> bool:
-    return bool(OPUS_API_KEY) and _opus_quota_today_used() < OPUS_DAILY_LIMIT
+    """True iff Opus can be called today: API key present + call-count under
+    OPUS_DAILY_LIMIT + USD spend under DIRECTOR_DAILY_USD_CAP (M4-T01)."""
+    if not OPUS_API_KEY:
+        return False
+    if _opus_quota_today_used() >= OPUS_DAILY_LIMIT:
+        return False
+    if daily_usd_cap_blocks(estimate_usd=0.0):
+        return False
+    return True
 
 def call_opus_high(system: str, user: str) -> str:
     """Opus 4.7 with adaptive thinking + high effort. Used for decompose only.
@@ -511,6 +723,9 @@ def call_opus_high(system: str, user: str) -> str:
             "content-type": "application/json",
         },
     )
+    # M4-T01: pre-flight USD cap gate. Estimate from prior calls is hard; use 0
+    # (gate fires when already >= cap, preserving best-effort behavior).
+    assert_under_daily_cap(estimate_usd=0.0)
     with urllib.request.urlopen(req, timeout=120) as resp:
         data = json.loads(resp.read())
     # Walk content blocks, return first text block
@@ -519,28 +734,9 @@ def call_opus_high(system: str, user: str) -> str:
     if not text:
         raise RuntimeError("Opus boş yanıt döndü")
     _opus_quota_increment()
-    # Cost tracking — append usage line per call
-    try:
-        usage = data.get("usage", {})
-        log_path = DIRECTOR_HOME / "opus_usage.jsonl"
-        in_tok = int(usage.get("input_tokens", 0))
-        out_tok = int(usage.get("output_tokens", 0))
-        cache_read = int(usage.get("cache_read_input_tokens", 0))
-        cache_write = int(usage.get("cache_creation_input_tokens", 0))
-        # Pricing assumption: Opus 4 tier ($15/M in, $75/M out, $1.50/M cache_read, $18.75/M cache_write)
-        cost = (in_tok * 15 + out_tok * 75 + cache_read * 1.5 + cache_write * 18.75) / 1_000_000
-        with open(log_path, "a") as f:
-            f.write(json.dumps({
-                "ts": datetime.now(timezone.utc).isoformat(timespec="seconds"),
-                "model": OPUS_MODEL,
-                "input_tokens": in_tok,
-                "output_tokens": out_tok,
-                "cache_read": cache_read,
-                "cache_write": cache_write,
-                "cost_usd_est": round(cost, 4),
-            }) + "\n")
-    except Exception:
-        pass
+    # M4-T01: unified usage tracker. Writes to USAGE_LOG_PATH (director_usage.jsonl).
+    # Legacy opus_usage.jsonl is read-only on aggregation, no longer written to.
+    record_usage(OPUS_MODEL, data.get("usage", {}) or {})
     return text
 
 def parse_plan(text: str) -> dict:
@@ -2588,6 +2784,65 @@ def cmd_fixture(args) -> int:
     print(f"Total: {report['total']}, Passed: {report['passed']}, Failed: {report['failed']}")
     return 0 if report["failed"] == 0 else 1
 
+def cmd_budget(args) -> int:
+    """M4-T01: aggregate director_usage.jsonl + opus_usage.jsonl for a UTC date.
+    Surfaces total spent vs DAILY_USD_CAP, optionally per-model breakdown.
+    --json emits a machine-readable payload; default is a one-screen text table."""
+    date = getattr(args, "date", None)
+    if not date:
+        date = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+    by_model: dict[str, dict[str, float]] = {}
+    total = 0.0
+    n_calls = 0
+    for path in (OPUS_USAGE_PATH, USAGE_LOG_PATH):
+        for rec in _iter_usage_lines(path):
+            ts = rec.get("ts", "")
+            if not ts.startswith(date):
+                continue
+            cost = 0.0
+            try:
+                cost = float(rec.get("cost_usd_est", 0.0) or 0.0)
+            except Exception:
+                cost = 0.0
+            total += cost
+            n_calls += 1
+            model = rec.get("model", "unknown")
+            entry = by_model.setdefault(model, {"calls": 0, "usd": 0.0})
+            entry["calls"] += 1
+            entry["usd"] += cost
+    cap = DAILY_USD_CAP
+    util_pct = (total / cap * 100.0) if cap and cap > 0 else 0.0
+    payload = {
+        "date": date,
+        "total_usd": round(total, 6),
+        "cap_usd": round(cap, 4) if cap else 0.0,
+        "utilization_pct": round(util_pct, 2),
+        "n_calls": n_calls,
+        "by_model": (
+            {m: {"calls": int(v["calls"]), "usd": round(v["usd"], 6)}
+             for m, v in by_model.items()}
+            if getattr(args, "by_model", False) else {}
+        ),
+        "sources": [str(OPUS_USAGE_PATH), str(USAGE_LOG_PATH)],
+    }
+    if getattr(args, "json", False):
+        print(json.dumps(payload))
+        return 0
+    cap_label = f"${cap:.2f}" if cap and cap > 0 else "disabled"
+    print(f"Director budget — {date} (UTC)")
+    print(f"  Spent : ${total:.4f}")
+    print(f"  Cap   : {cap_label}")
+    if cap and cap > 0:
+        print(f"  Util  : {util_pct:.1f}%")
+    print(f"  Calls : {n_calls}")
+    if getattr(args, "by_model", False) and by_model:
+        print(f"\n  By model:")
+        rows = sorted(by_model.items(), key=lambda kv: -kv[1]["usd"])
+        for model, v in rows:
+            print(f"    {model:<40} calls={int(v['calls']):>4}  usd=${v['usd']:.4f}")
+    return 0
+
+
 def cmd_mnemonics_replay(args) -> int:
     """Replay fallback mnemonics records. Operator-triggered (never implicit)."""
     if not MNEMONICS_FALLBACK_PATH.exists():
@@ -2650,6 +2905,16 @@ def main() -> int:
     p_mr = sub.add_parser("mnemonics-replay",
                           help="Fallback dosyasındaki mnemonics kayıtlarını yeniden ingest dene (M2-T03)")
     p_mr.set_defaults(func=cmd_mnemonics_replay)
+
+    p_bu = sub.add_parser("budget",
+                           help="Bugünkü USD harcamasını DIRECTOR_DAILY_USD_CAP ile karşılaştır (M4-T01)")
+    p_bu.add_argument("--date", default=None,
+                      help="UTC tarihi (YYYY-MM-DD). Boşsa bugün.")
+    p_bu.add_argument("--by-model", action="store_true",
+                      help="Per-model çağrı sayısı + USD breakdown göster.")
+    p_bu.add_argument("--json", action="store_true",
+                      help="Machine-readable JSON payload.")
+    p_bu.set_defaults(func=cmd_budget)
 
     p_fx = sub.add_parser("fixture", help="Fixture suite koştur (M2-T04, observation only)")
     fx_sub = p_fx.add_subparsers(dest="fixture_action", required=True)
