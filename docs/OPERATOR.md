@@ -139,6 +139,25 @@ print(f'Today Opus est: \${total:.2f}')
 
 If any check fails, investigate before the next run.
 
+## Mnemonics replay (M2-T03)
+
+Mnemonics ingest is best-effort. If the local MCP server is slow or down, the record is retried up to 3 times with exponential backoff (1s, 3s, 9s). All four attempts failing means the record gets queued in `mnemonics.fallback.jsonl` instead of being silently dropped, and a `FALLBACK` line is written to `mnemonics.log`.
+
+To replay queued fallback records once the server is healthy again:
+
+```bash
+./director.py mnemonics-replay
+```
+
+The command reads every line in `mnemonics.fallback.jsonl`, retries ingest, and prunes successful entries. Failed entries stay in the file for the next replay attempt. Exit code is `0` when everything ingests, `1` when records remain queued.
+
+Run this whenever:
+- `mnemonics.log` shows recent `FALLBACK` lines.
+- `mnemonics.fallback.jsonl` exists at top of the director repo.
+- A weekly health check shows missing run summaries in mnemonics retrieval.
+
+Do not run automatically on every cron tick, replay is operator-triggered so a stuck mnemonics server can't cause a runaway retry loop in the background.
+
 ## Emergency stop
 
 If Director is doing something destructive (e.g. tightening every persona on every run, runaway cost):

@@ -25,6 +25,7 @@ import re
 import signal
 import subprocess
 import sys
+import threading
 import time
 import uuid
 from datetime import datetime, timezone
@@ -75,31 +76,114 @@ def _project_root(cwd: str) -> str:
         return cwd
 
 MNEMONICS_LOG_PATH = DIRECTOR_HOME / "mnemonics.log"
+MNEMONICS_FALLBACK_PATH = DIRECTOR_HOME / "mnemonics.fallback.jsonl"
+MNEMONICS_FALLBACK_LOCK = threading.Lock()
+# M2-T03: 1 initial + 3 retries with exponential backoff. Cumulative wait budget = 13s.
+MNEMONICS_RETRY_BACKOFF = (1, 3, 9)
+MNEMONICS_PER_ATTEMPT_TIMEOUT = 5
 
-def mnemonics_record(text: str, ns: str = "director") -> None:
-    """Persist a run summary or learning into mnemonics DB (cross-session memory).
-    Errors logged to ~/.claude/director/mnemonics.log instead of swallowed silently."""
-    if not text.strip():
-        return
+def _mnemonics_log(line: str) -> None:
+    try:
+        with open(MNEMONICS_LOG_PATH, "a") as lf:
+            lf.write(line)
+    except Exception:
+        pass
+
+def _mnemonics_fallback_append(text: str, ns: str) -> None:
+    """Atomic append to JSONL fallback file under a process-wide lock so
+    concurrent record() calls don't tear lines."""
+    rec = {"ts": datetime.now().isoformat(timespec="seconds"), "ns": ns, "text": text}
+    line = json.dumps(rec, ensure_ascii=False) + "\n"
+    with MNEMONICS_FALLBACK_LOCK:
+        try:
+            with open(MNEMONICS_FALLBACK_PATH, "a") as ff:
+                ff.write(line)
+        except Exception as e:
+            _mnemonics_log(f"[{datetime.now().isoformat(timespec='seconds')}] FALLBACK-WRITE-FAIL ns={ns}: {e}\n")
+
+def _mnemonics_attempt(text: str, ns: str) -> tuple[bool, str]:
+    """Single ingest attempt. Returns (ok, error_string)."""
     env = {**os.environ, "HF_HUB_DISABLE_PROGRESS_BARS": "1", "TRANSFORMERS_VERBOSITY": "error"}
     try:
         proc = subprocess.run(
             ["mnemonics", "ingest", "--ns", ns, text],
-            check=False, timeout=15, env=env,
+            check=False, timeout=MNEMONICS_PER_ATTEMPT_TIMEOUT, env=env,
             capture_output=True, text=True,
         )
-        if proc.returncode != 0:
-            with open(MNEMONICS_LOG_PATH, "a") as lf:
-                lf.write(f"[{datetime.now().isoformat(timespec='seconds')}] FAIL ns={ns} rc={proc.returncode}: {proc.stderr[-500:]}\n")
+        if proc.returncode == 0:
+            return (True, "")
+        return (False, f"rc={proc.returncode}: {proc.stderr[-400:]}")
     except subprocess.TimeoutExpired:
-        with open(MNEMONICS_LOG_PATH, "a") as lf:
-            lf.write(f"[{datetime.now().isoformat(timespec='seconds')}] TIMEOUT ns={ns}: {text[:120]}\n")
+        return (False, "TIMEOUT")
     except Exception as e:
+        return (False, f"ERR: {e}")
+
+def mnemonics_record(text: str, ns: str = "director") -> None:
+    """Persist a record into mnemonics DB with retry+fallback (M2-T03).
+
+    Strategy: 1 initial attempt + up to 3 retries with exponential backoff
+    (1s, 3s, 9s) on failure. Cumulative backoff budget = 13 seconds.
+    If all attempts fail, write to mnemonics.fallback.jsonl instead of
+    silently dropping the record. Operator runs `director mnemonics-replay`
+    to retry the fallback batch later.
+
+    D6 discipline: the fallback file is the safety net for the public
+    evolution log — without it, evolution events leak through the cracks.
+    """
+    if not text.strip():
+        return
+    last_err = ""
+    attempts = 1 + len(MNEMONICS_RETRY_BACKOFF)
+    for i in range(attempts):
+        ok, err = _mnemonics_attempt(text, ns)
+        if ok:
+            return
+        last_err = err
+        if i < len(MNEMONICS_RETRY_BACKOFF):
+            time.sleep(MNEMONICS_RETRY_BACKOFF[i])
+    _mnemonics_fallback_append(text, ns)
+    _mnemonics_log(
+        f"[{datetime.now().isoformat(timespec='seconds')}] FALLBACK ns={ns} "
+        f"after {attempts} attempts ({last_err[:200]}): {text[:120]}\n"
+    )
+
+def mnemonics_replay_fallback() -> dict:
+    """Read mnemonics.fallback.jsonl, retry ingest each entry, prune successful ones.
+    Failed entries stay in the file for the next replay. Returns {ingested, remaining, errors}.
+    Operator-triggered (CLI subcommand `mnemonics-replay`); never called implicitly.
+    """
+    report = {"ingested": 0, "remaining": 0, "errors": []}
+    with MNEMONICS_FALLBACK_LOCK:
+        if not MNEMONICS_FALLBACK_PATH.exists():
+            return report
+        raw = MNEMONICS_FALLBACK_PATH.read_text()
+    leftover = []
+    for line in raw.splitlines():
+        line = line.strip()
+        if not line:
+            continue
         try:
-            with open(MNEMONICS_LOG_PATH, "a") as lf:
-                lf.write(f"[{datetime.now().isoformat(timespec='seconds')}] ERR ns={ns}: {e}\n")
+            rec = json.loads(line)
         except Exception:
-            pass
+            leftover.append(line)  # preserve malformed lines for manual inspection
+            report["errors"].append("malformed-json")
+            continue
+        ok, err = _mnemonics_attempt(rec.get("text", ""), rec.get("ns", "director"))
+        if ok:
+            report["ingested"] += 1
+        else:
+            leftover.append(json.dumps(rec, ensure_ascii=False))
+            report["errors"].append(err[:80])
+    report["remaining"] = len(leftover)
+    with MNEMONICS_FALLBACK_LOCK:
+        if leftover:
+            MNEMONICS_FALLBACK_PATH.write_text("\n".join(leftover) + "\n")
+        else:
+            try:
+                MNEMONICS_FALLBACK_PATH.unlink()
+            except FileNotFoundError:
+                pass
+    return report
 
 def director_event(run_id: str, cwd: str, kind: str, note: str, path: str = "") -> None:
     """Emit a director-level event into the live peer feed.
@@ -1926,6 +2010,20 @@ def cmd_cancel(args) -> int:
     print(f"Cancelled {killed} running task(s); sealed {sealed} live-feed events.")
     return 0
 
+def cmd_mnemonics_replay(args) -> int:
+    """Replay fallback mnemonics records. Operator-triggered (never implicit)."""
+    if not MNEMONICS_FALLBACK_PATH.exists():
+        print(f"✓ Fallback dosyası yok ({MNEMONICS_FALLBACK_PATH}), replay'e gerek yok.")
+        return 0
+    print(f"⏳ Replay başlıyor: {MNEMONICS_FALLBACK_PATH}")
+    report = mnemonics_replay_fallback()
+    print(f"✓ ingested={report['ingested']}, remaining={report['remaining']}")
+    if report["errors"]:
+        print(f"⚠️  {len(report['errors'])} hata, ilk 3:")
+        for e in report["errors"][:3]:
+            print(f"   - {e}")
+    return 0 if report["remaining"] == 0 else 1
+
 def main() -> int:
     p = argparse.ArgumentParser(prog="director")
     sub = p.add_subparsers(dest="cmd", required=True)
@@ -1968,6 +2066,10 @@ def main() -> int:
     p_ab.add_argument("--auto-tighten", action="store_true",
                       help="Drift tespitinde persona description'ı V4 Pro ile sertleştir ve personas.json'a yaz (yedek alınır). Closed-loop self-improvement.")
     p_ab.set_defaults(func=cmd_ab)
+
+    p_mr = sub.add_parser("mnemonics-replay",
+                          help="Fallback dosyasındaki mnemonics kayıtlarını yeniden ingest dene (M2-T03)")
+    p_mr.set_defaults(func=cmd_mnemonics_replay)
 
     args = p.parse_args()
     return args.func(args)

@@ -105,6 +105,16 @@ For full repository state at a specific point in time, use git: `git checkout <c
 
 **Operator note:** This is the first time a persona description in this repo has been changed by the system rather than by a human, and the change has been accepted as the working state. The accountability boundary moves from human-authored to system-authored. The fixture suite must catch any regression that follows.
 
+## 2026-05-03 00:15 scaffolding M2-T03 mnemonics-robustness
+
+**Action:** `mnemonics_record` rewritten with retry+backoff+fallback. Strategy: 1 initial attempt + 3 retries with exponential backoff (1s, 3s, 9s, cumulative 13s). Per-attempt timeout 5s. Failed records queued to `mnemonics.fallback.jsonl` (JSONL, ts/ns/text fields) under a process-wide `threading.Lock` so concurrent record() calls don't tear lines. New `mnemonics_replay_fallback()` reads queue, retries ingest, prunes successful entries, leaves failed ones. CLI subcommand `./director.py mnemonics-replay` exposes operator-triggered replay (never implicit, so a stuck MCP can't cause runaway retry).
+
+**D6 safety net:** Without the fallback file, evolution events leaked through the cracks (M1 reinforcement notes flagged "mnemonics ingest timeouts on local MCP server, best-effort recording today, needs robustness fix in M2"). T03 closes that gap.
+
+**Test coverage:** 5 scenarios / 18 sub-assertions in `tests/test_mnemonics_robustness.py`, all green: success-on-first-try, retry-then-success (2 backoff sleeps), all-fail-then-fallback (FALLBACK marker in log + JSONL entry), replay-prunes-successful, concurrent-records-no-torn-lines.
+
+**Operator surface:** `OPERATOR.md` got a "Mnemonics replay" section with replay command, when-to-run guidance, and the explicit no-automation rule.
+
 ## 2026-05-02 23:55 scaffolding M2-T02 critic-tighten
 
 **Action:** Implementation landed. Task-critic prompt extracted from inline `TASK_CRITIC_PROMPT` constant to `critic_prompt.txt`. Added precision/recall scoring against disk-truth ground truth (`critic_precision`, `critic_recall`, `score_critic_quality`), bidirectional drift gate `critic_drift_fires` (precision < 0.8 OR recall < 0.8), mixed-family tightener `auto_tighten_critic` (Llama 3.3 via NIM, worker is DeepSeek), atomic apply with timestamped backup, and wrapper `tighten_critic_if_drift`.
