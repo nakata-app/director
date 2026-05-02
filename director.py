@@ -252,6 +252,29 @@ Doğrulanmış formül (Director A/B harness verileri):
 Yeni description üret. SADECE yeni description'ı tek paragraf olarak yaz, başka hiçbir metin/açıklama yok. Markdown yok, kod fence yok.
 """
 
+CRITIC_TIGHTEN_PROMPT = """Görev: Aşağıdaki "ESKİ KRİTİK PROMPT" bir LLM'e verilen sistem talimatıdır (task-critic). Bu critic precision veya recall drift'i yarattı: ya yanlış pass'leri (false-pass) çoğalttı (precision düştü), ya da gerçekten geçen task'ları fail etti (recall düştü). Sertleştirilmiş halini yeniden yazacaksın.
+
+ÖNEMLİ — Çıktı kuralları:
+- Çıktın bir TALIMAT METNİDİR ("Sen bir QA agent'ısın..." gibi başlar). JSON üretme. Verdict örneği yazma.
+- Uzunluk: 800-1500 karakter arası.
+- "pass", "fail", "artifact" veya "disk" kelimeleri MUTLAKA geçmeli (D1 anti-collapse: disk-truth criterion korunmalı).
+- "byte-match", "literal" benzeri disk-truth'a referans MUTLAKA olmalı.
+- JSON çıktı şeması (verdict, reason alanları) korunmalı.
+- {brief}, {output}, {artifact_status} placeholder'ları MUTLAKA korunmalı (template substitution noktaları).
+- Markdown code fence YASAK.
+
+[ESKİ KRİTİK PROMPT — drift gözlendi, sertleştir]
+{old_prompt}
+
+[DRIFT KANITI — false-pass veya false-fail örnekleri]
+Precision: {precision} ({n_pass_calls} PASS verildi, {true_passes} doğru)
+Recall: {recall} ({n_truth_pass} truth-PASS, kaçırılan: {missed_passes})
+Yanlış kararlar:
+{drift_examples}
+
+ŞİMDİ yeni TALIMAT METNINI yaz, 800-1500 karakter, placeholder'lar korunmuş, disk-truth criterion sert:
+"""
+
 DECOMPOSER_TIGHTEN_PROMPT = """Görev: Aşağıdaki "ESKİ DECOMPOSER PROMPT" bir LLM'e verilen SİSTEM TALIMATIDIR (decomposer prompt). Drift gözlendi: hedef literal'leri brief'lerde paraphrase edildi ve/veya expected_content alanı atlandı. Sen bu TALIMAT METNINI sertleştirilmiş haliyle yeniden yazacaksın.
 
 ÖNEMLİ — Çıktı kuralları:
@@ -300,36 +323,16 @@ Output SADECE valid JSON:
 }
 """
 
-TASK_CRITIC_PROMPT = """Sen bir QA agent'ısın. Bir alt-task'ın output'unu inceleyip BAŞARILI olup olmadığına karar vereceksin.
+CRITIC_PROMPT_PATH = Path(os.path.expanduser("~/.claude/director")) / "critic_prompt.txt"
 
-ÖNEMLİ — Disk doğrulama zaten geçti:
-{artifact_status}
-Yani task'ın somut çıktısı diskte mevcut ve (varsa) içerik literal olarak eşleşiyor. Senin işin sadece açık başarısızlık sinyali yakalamak.
+def load_critic_prompt() -> str:
+    """Read task-critic system prompt from disk. Mutated by auto_tighten_critic.
+    M2-T02: extracted from inline constant so the auto-tighten loop can rewrite it."""
+    if not CRITIC_PROMPT_PATH.exists():
+        raise FileNotFoundError(f"critic_prompt.txt not found at {CRITIC_PROMPT_PATH}")
+    return CRITIC_PROMPT_PATH.read_text()
 
-Task brief'i: {brief}
-
-Task output (claude -p log'u):
-{output}
-
-SADECE şu açık başarısızlık sinyallerinde 'fail' ver:
-- Log'da explicit refuse: "yapamam", "yapamadım", "izin verilmedi", "bunu yapmayacağım"
-- Log'da explicit error/exception: traceback, "Error:", "Exception:", non-zero exit hint
-- Log'da "kullanıcıya soracağım", "açıklığa kavuştur" gibi tamamlanmamışlık ifadesi
-- Brief tamamen farklı bir iş yapılmış (örn. silmesi gerekirken eklemiş)
-
-Aşağıdaki durumlar 'fail' DEĞİLDİR (default 'pass'):
-- Log kısa veya minimal — claude bazen sadece dosya yazıp çıkar, açıklama yapmaz
-- "Verified", "doğruladı" gibi explicit kanıt eksikliği — disk zaten doğrulandı
-- Output stiliyle ilgili şikayetler — sadece içerik ve task tamamlanması önemli
-
-Çıktı SADECE valid JSON, başka metin yok:
-{
-  "verdict": "pass" | "fail",
-  "reason": "1 cümle gerekçe (max 100 char)"
-}
-
-Default 'pass'. Sadece yukarıdaki açık fail sinyallerinden BIRI varsa 'fail'.
-"""
+TASK_CRITIC_PROMPT = load_critic_prompt()
 
 def _post_chat(url: str, model: str, key: str, messages: list[dict]) -> str:
     body = {
@@ -774,6 +777,168 @@ def apply_tightened_decomposer(new_prompt: str) -> bool:
     except Exception as e:
         print(f"⚠️  apply decomposer tighten failed: {e}", file=sys.stderr)
         return False
+
+# --- M2-T02: critic drift signals + auto-tighten ---
+# Worker family for the task-critic = DeepSeek (call_v4pro). Tightener must differ.
+CRITIC_TIGHTENER_MODEL = "meta/llama-3.3-70b-instruct"  # Meta family
+CRITIC_WORKER_FAMILY = "DeepSeek"
+CRITIC_TIGHTENER_FAMILY = "Llama"
+
+def critic_precision(decisions: list[dict]) -> float:
+    """Of all critic-PASS calls, how many actually had disk-truth pass?
+    decisions: [{'task_id', 'critic_verdict' ('pass'|'fail'), 'disk_truth_pass' (bool)}]
+    Vacuous 1.0 when no PASS calls (no false positives possible).
+    """
+    pass_calls = [d for d in decisions if d.get("critic_verdict") == "pass"]
+    if not pass_calls:
+        return 1.0
+    correct = sum(1 for d in pass_calls if d.get("disk_truth_pass"))
+    return correct / len(pass_calls)
+
+def critic_recall(decisions: list[dict]) -> float:
+    """Of all disk-truth-PASS tasks, how many did the critic mark PASS?
+    Vacuous 1.0 when no ground-truth PASS exists (D4 blind-spot ceiling).
+    """
+    truth_pass = [d for d in decisions if d.get("disk_truth_pass")]
+    if not truth_pass:
+        return 1.0
+    found = sum(1 for d in truth_pass if d.get("critic_verdict") == "pass")
+    return found / len(truth_pass)
+
+def score_critic_quality(decisions: list[dict]) -> dict:
+    """Returns precision + recall against disk-truth ground truth + diagnostics."""
+    p = critic_precision(decisions)
+    r = critic_recall(decisions)
+    return {
+        "precision": round(p, 3), "recall": round(r, 3),
+        "n_decisions": len(decisions),
+        "n_pass_calls": sum(1 for d in decisions if d.get("critic_verdict") == "pass"),
+        "n_truth_pass": sum(1 for d in decisions if d.get("disk_truth_pass")),
+    }
+
+def critic_drift_fires(precision: float, recall: float) -> bool:
+    """Bidirectional drift gate: precision < 0.8 (too lenient) OR recall < 0.8 (too strict).
+    D2 self-flattering defense: gate is two-sided so a one-sided model can't game it.
+    """
+    return precision < 0.8 or recall < 0.8
+
+def _critic_density_ok(prompt: str) -> bool:
+    """D1 anti-collapse: disk-truth criterion + pass/fail decision schema must remain.
+    Refuse rewrites that strip the explicit decision criteria."""
+    p = prompt.lower()
+    has_disk = any(k in p for k in ["disk", "artifact", "byte", "literal"])
+    has_decision = "pass" in p and "fail" in p
+    return has_disk and has_decision
+
+def _mixed_family_ok(worker_family: str, tightener_family: str) -> bool:
+    """D2: tightener family must differ from worker family."""
+    return worker_family.lower() != tightener_family.lower()
+
+def _summarize_drift_examples(decisions: list[dict], max_n: int = 6) -> str:
+    """Pull up to max_n misclassified decisions for the tightener prompt."""
+    wrong = [d for d in decisions
+             if (d.get("critic_verdict") == "pass") != bool(d.get("disk_truth_pass"))]
+    out = []
+    for d in wrong[:max_n]:
+        kind = "FALSE-PASS" if d.get("critic_verdict") == "pass" else "FALSE-FAIL"
+        out.append(f"- [{kind}] task={d.get('task_id','?')} reason={d.get('reason','-')[:80]}")
+    return "\n".join(out) if out else "(no misclassified decisions captured)"
+
+def auto_tighten_critic(decisions: list[dict]) -> dict | None:
+    """Generate a tightened critic prompt via Llama 3.3 (mixed-family from DeepSeek worker).
+    Sanity: 800-1500 chars + density (disk + pass/fail) + placeholder preservation.
+    Returns {'old': str, 'new': str, 'precision': float, 'recall': float} or None.
+    """
+    if not _mixed_family_ok(CRITIC_WORKER_FAMILY, CRITIC_TIGHTENER_FAMILY):
+        return None
+    try:
+        old_prompt = load_critic_prompt()
+    except Exception:
+        return None
+    quality = score_critic_quality(decisions)
+    pass_calls = [d for d in decisions if d.get("critic_verdict") == "pass"]
+    true_passes = sum(1 for d in pass_calls if d.get("disk_truth_pass"))
+    truth_pass = [d for d in decisions if d.get("disk_truth_pass")]
+    missed = sum(1 for d in truth_pass if d.get("critic_verdict") != "pass")
+    drift_examples = _summarize_drift_examples(decisions)
+    prompt = (CRITIC_TIGHTEN_PROMPT
+              .replace("{old_prompt}", old_prompt)
+              .replace("{precision}", f"{quality['precision']}")
+              .replace("{recall}", f"{quality['recall']}")
+              .replace("{n_pass_calls}", str(quality["n_pass_calls"]))
+              .replace("{true_passes}", str(true_passes))
+              .replace("{n_truth_pass}", str(quality["n_truth_pass"]))
+              .replace("{missed_passes}", str(missed))
+              .replace("{drift_examples}", drift_examples))
+    try:
+        new_prompt = call_nim_llama([
+            {"role": "system", "content": "Sen JSON-FREE plain text output veren prompt-tightener uzmanısın. Sadece yeni critic prompt'unu yaz."},
+            {"role": "user", "content": prompt},
+        ]).strip()
+    except Exception:
+        return None
+    new_prompt = re.sub(r"^```.*?\n|```$", "", new_prompt, flags=re.DOTALL).strip()
+    new_prompt = new_prompt.strip('"\'`')
+    # Sanity bounds: 800-1500c (revised from ticket's 150-1000 since baseline is ~1244c).
+    if not (800 <= len(new_prompt) <= 1500):
+        return None
+    if not _critic_density_ok(new_prompt):
+        return None
+    # Placeholders must survive — without {brief}/{output}/{artifact_status}, runtime breaks.
+    for ph in ("{brief}", "{output}", "{artifact_status}"):
+        if ph not in new_prompt:
+            return None
+    if new_prompt == old_prompt:
+        return None
+    return {"old": old_prompt, "new": new_prompt,
+            "precision": quality["precision"], "recall": quality["recall"]}
+
+def apply_tightened_critic(new_prompt: str) -> bool:
+    """Atomically update critic_prompt.txt with timestamped backup."""
+    try:
+        ts = datetime.now().strftime("%Y%m%d-%H%M%S")
+        path = CRITIC_PROMPT_PATH
+        backup = path.with_suffix(f".txt.bak.{ts}-auto-tighten")
+        backup.write_text(path.read_text())
+        tmp = path.with_suffix(".txt.tmp")
+        tmp.write_text(new_prompt)
+        tmp.replace(path)
+        return True
+    except Exception as e:
+        print(f"⚠️  apply critic tighten failed: {e}", file=sys.stderr)
+        return False
+
+def tighten_critic_if_drift(decisions: list[dict], dry_run: bool = True) -> dict:
+    """Drift gate + tighten + (optional) apply + log + mnemonics, atomic.
+    Returns {'fired', 'applied', 'old_len', 'new_len', 'quality'}.
+    """
+    quality = score_critic_quality(decisions)
+    fires = critic_drift_fires(quality["precision"], quality["recall"])
+    out = {"fired": fires, "applied": False, "old_len": 0, "new_len": 0, "quality": quality}
+    if not fires:
+        return out
+    proposal = auto_tighten_critic(decisions)
+    if not proposal:
+        return out
+    out["old_len"] = len(proposal["old"])
+    out["new_len"] = len(proposal["new"])
+    if dry_run:
+        return out
+    if apply_tightened_critic(proposal["new"]):
+        out["applied"] = True
+        ts = datetime.now().strftime("%Y-%m-%d %H:%M")
+        mnemonics_record(
+            f"[{ts}] director critic-tighten: precision={quality['precision']}, "
+            f"recall={quality['recall']}, n={quality['n_decisions']} | "
+            f"old={out['old_len']}c -> new={out['new_len']}c",
+            ns="director",
+        )
+        append_evolution_log("critic-tighten", {
+            "precision": quality["precision"], "recall": quality["recall"],
+            "n": quality["n_decisions"],
+            "old": out["old_len"], "new": out["new_len"],
+        })
+    return out
 
 def tighten_decomposer_if_drift(goal: str, plan: dict, baseline_avg: float = 4.0,
                                  dry_run: bool = True) -> dict:

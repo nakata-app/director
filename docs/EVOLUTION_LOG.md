@@ -105,6 +105,18 @@ For full repository state at a specific point in time, use git: `git checkout <c
 
 **Operator note:** This is the first time a persona description in this repo has been changed by the system rather than by a human, and the change has been accepted as the working state. The accountability boundary moves from human-authored to system-authored. The fixture suite must catch any regression that follows.
 
+## 2026-05-02 23:55 scaffolding M2-T02 critic-tighten
+
+**Action:** Implementation landed. Task-critic prompt extracted from inline `TASK_CRITIC_PROMPT` constant to `critic_prompt.txt`. Added precision/recall scoring against disk-truth ground truth (`critic_precision`, `critic_recall`, `score_critic_quality`), bidirectional drift gate `critic_drift_fires` (precision < 0.8 OR recall < 0.8), mixed-family tightener `auto_tighten_critic` (Llama 3.3 via NIM, worker is DeepSeek), atomic apply with timestamped backup, and wrapper `tighten_critic_if_drift`.
+
+**D1 anti-collapse:** density check enforces both disk-truth keyword (`disk`/`artifact`/`byte`/`literal`) and decision schema (`pass`/`fail`); D2 mixed-family enforced at call site (`_mixed_family_ok`); placeholder preservation (`{brief}`, `{output}`, `{artifact_status}`) blocks runtime breakage.
+
+**Test coverage:** 8 scenarios / 21 sub-assertions in `tests/test_critic_drift.py`, all green. Live A/B verified end-to-end: lenient critic (precision=0.2, 5 false-passes) triggered drift gate, Llama tightener produced valid 1353c replacement (density+placeholder checks pass), atomic apply + backup + reload OK, baseline restored.
+
+**Sanity bound revision:** Ticket originally specified 150-1000 chars. Baseline `critic_prompt.txt` is ~1244c (with mandatory placeholders), so ceiling raised to 1500 and floor to 800. Ticket updated.
+
+**Operator note:** No live critic-tighten event has fired yet on a real run (the 23:56 dry test entry was reverted along with its backup file). The first organic event will be appended by `tighten_critic_if_drift` itself when production run decisions emit precision or recall drift.
+
 ## 2026-05-02 23:30 scaffolding M2-T01 decomposer-tighten
 
 **Action:** Implementation landed. Decomposer system prompt extracted from inline `DECOMP_PROMPT` constant to `decomposer_prompt.txt`. Added drift signals (`goal_literal_preservation`, `expected_content_presence`, `task_count_deviation`), composite scorer `score_decomposer_fidelity`, drift gate `decomposer_drift_fires`, mixed-family tightener `auto_tighten_decomposer` (Llama 3.3 via NIM since worker is DeepSeek), atomic apply with timestamped backup, and wrapper `tighten_decomposer_if_drift` (gate+tighten+apply+log+mnemonics).

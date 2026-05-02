@@ -22,7 +22,7 @@ Critic drift looks like: false-pass rate above threshold (when measured against 
   - recall falls below 0.8 (too strict: failing things that did deliver).
 - A new function `auto_tighten_critic(sample_critic_decisions, ground_truth)` calls the tightener with examples of false-pass and false-fail cases attached to the prompt rewrite request.
 - Critic prompt is extracted to `critic_prompt.txt` (currently a Python constant in director.py).
-- Sanity bounds: 150-1000 chars on tightened critic prompt.
+- Sanity bounds: **800-1500 chars** on tightened critic prompt (revised from initial 150-1000, baseline `critic_prompt.txt` is ~1244c with mandatory `{brief}`/`{output}`/`{artifact_status}` placeholders, so 1000 ceiling was unrealistic).
 - Each event mnemonics-recorded with `event=critic-tighten` and includes the precision/recall measurements that triggered it.
 - Each event appended to `EVOLUTION_LOG.md`.
 
@@ -40,7 +40,7 @@ Critic drift looks like: false-pass rate above threshold (when measured against 
 
 ## Disciplines (DISCIPLINES.md)
 
-- D1 anti-collapse: sanity bounds 150-1000 chars; refuse rewrites that drop the explicit decision criteria ("PASS only if artifact byte-matches" must remain).
+- D1 anti-collapse: sanity bounds 800-1500 chars; refuse rewrites that drop the explicit decision criteria ("PASS only if artifact byte-matches" must remain) AND lose `{brief}`/`{output}`/`{artifact_status}` placeholders.
 - D2 mixed-family: tightener family different from worker AND scorer families if practical.
 - D3 disk truth wins: precision/recall ground-truth comes from disk artifact match, not from another LLM's opinion.
 - D5 backup before write.
