@@ -1,0 +1,25 @@
+{
+  "_doc": "Per-domain drift threshold overrides. Keys missing from a domain block fall back to DRIFT_DEFAULTS in director.py. Reserved keys starting with '_' are comments.",
+  "security": {
+    "_doc": "Security tasks tolerate verbose, detail-heavy output (defense-in-depth, threat modeling). Lower decomposer score floor + higher recall floor (false negatives are catastrophic).",
+    "decomposer_score_floor": 6.5,
+    "decomposer_literal_floor": 0.65,
+    "critic_recall_floor": 0.85,
+    "persona_log_inflation_threshold": 0.45
+  },
+  "refactor": {
+    "_doc": "Refactors must be surgical and disciplined: tighten thresholds. Higher score + higher literal preservation; punish completion drop fast (every dropped task = scope creep).",
+    "decomposer_score_floor": 7.5,
+    "decomposer_literal_floor": 0.8,
+    "critic_precision_floor": 0.85,
+    "persona_completion_drop_threshold": 0.10,
+    "persona_log_inflation_threshold": 0.20
+  },
+  "design": {
+    "_doc": "Design/UI tasks expect exploration and divergence. Permissive on completion drop and log inflation; persona fidelity slightly relaxed (creativity > literalism).",
+    "decomposer_literal_floor": 0.55,
+    "persona_completion_drop_threshold": 0.25,
+    "persona_log_inflation_threshold": 0.50,
+    "persona_fidelity_floor": 6.0
+  }
+}

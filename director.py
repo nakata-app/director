@@ -785,9 +785,51 @@ def score_decomposer_fidelity(goal: str, plan: dict, baseline_avg: float = 4.0) 
     return {"score": score, "literal": round(lit, 2),
             "expected": round(exp, 2), "deviation": round(dev, 2)}
 
-def decomposer_drift_fires(score: float, literal: float) -> bool:
-    """Drift gate: composite < 7 OR literal preservation < 0.7."""
-    return score < 7.0 or literal < 0.7
+# --- M3-T04: per-domain drift threshold tuning ---
+DRIFT_DEFAULTS = {
+    "decomposer_score_floor": 7.0,
+    "decomposer_literal_floor": 0.7,
+    "critic_precision_floor": 0.8,
+    "critic_recall_floor": 0.8,
+    "persona_completion_drop_threshold": 0.15,
+    "persona_log_inflation_threshold": 0.30,
+    "persona_fidelity_floor": 7.0,
+}
+
+DOMAIN_DRIFT_CONFIG_PATH = DIRECTOR_HOME / "domain_drift_config.json"
+
+
+def domain_drift_thresholds(domain: str = "default") -> dict:
+    """Per-domain drift threshold lookup with default fallback.
+    Missing file, malformed JSON, or missing domain → DRIFT_DEFAULTS.
+    Reserved keys starting with '_' (e.g. _doc) are treated as comments."""
+    out = dict(DRIFT_DEFAULTS)
+    cfg_path = DOMAIN_DRIFT_CONFIG_PATH
+    try:
+        if not cfg_path.exists():
+            return out
+        cfg = json.loads(cfg_path.read_text())
+    except Exception as e:
+        print(f"⚠ domain_drift_config malformed, defaults: {e}", file=sys.stderr)
+        return out
+    if not isinstance(cfg, dict):
+        return out
+    overrides = cfg.get(domain)
+    if not isinstance(overrides, dict):
+        return out
+    for k, v in overrides.items():
+        if k.startswith("_"):
+            continue
+        if k in out and isinstance(v, (int, float)) and not isinstance(v, bool):
+            out[k] = float(v)
+    return out
+
+
+def decomposer_drift_fires(score: float, literal: float, domain: str = "default") -> bool:
+    """Drift gate: composite < score_floor OR literal preservation < literal_floor.
+    Per-domain thresholds via DOMAIN_DRIFT_CONFIG_PATH; default falls back to globals."""
+    t = domain_drift_thresholds(domain)
+    return score < t["decomposer_score_floor"] or literal < t["decomposer_literal_floor"]
 
 def _decomposer_content_density_ok(prompt: str) -> bool:
     """D1 anti-collapse: tightened prompt must still contain structural keywords."""
@@ -900,11 +942,12 @@ def score_critic_quality(decisions: list[dict]) -> dict:
         "n_truth_pass": sum(1 for d in decisions if d.get("disk_truth_pass")),
     }
 
-def critic_drift_fires(precision: float, recall: float) -> bool:
-    """Bidirectional drift gate: precision < 0.8 (too lenient) OR recall < 0.8 (too strict).
+def critic_drift_fires(precision: float, recall: float, domain: str = "default") -> bool:
+    """Bidirectional drift gate: precision < floor (too lenient) OR recall < floor (too strict).
     D2 self-flattering defense: gate is two-sided so a one-sided model can't game it.
-    """
-    return precision < 0.8 or recall < 0.8
+    Per-domain thresholds via DOMAIN_DRIFT_CONFIG_PATH; default falls back to globals."""
+    t = domain_drift_thresholds(domain)
+    return precision < t["critic_precision_floor"] or recall < t["critic_recall_floor"]
 
 def _critic_density_ok(prompt: str) -> bool:
     """D1 anti-collapse: disk-truth criterion + pass/fail decision schema must remain.
