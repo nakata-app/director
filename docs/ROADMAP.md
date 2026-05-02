@@ -14,17 +14,21 @@ Four milestones, sequenced. Each milestone has explicit acceptance criteria. Ski
 - Persona backup is written with timestamp before disk overwrite.
 - Mnemonics record captures drift signals, old length, new length, persona id.
 
-**Status:** **CLOSED** as of 2026-05-02 22:57.
+**Status:** **CLOSED** as of 2026-05-02 22:57; reinforced 23:14 with completion-weighted fidelity, falsy-coalesce fix, and absolute completion-floor.
 - Persona fidelity scoring: validated (8.0/10, n=4 in baseline run; observed quirk on full-failure A arm scoring 10/10, flagged for M2 investigation)
 - Drift gate suppression (no drift case): validated (baseline run, drift below threshold, tighten correctly suppressed)
 - Drift gate firing (synthetic case): validated (verbose injection produced comp_drop=1.00, tighten fired)
 - Tighten + backup + write: validated (1223c → 247c, sanity bounds passed, atomic disk write, timestamped backup at personas.json.bak.20260502-225718-auto-tighten)
 - Mnemonics record: code present, observed timeouts in mnemonics.log, needs robustness fix in M2
 
-**Open issues to address before or during M2:**
-- Fidelity scorer should weight completion rate. A 0/2 arm should not score 10/10.
-- Mnemonics ingest timeouts on local MCP server need investigation; record is currently best-effort.
-- Drift signal currently relies primarily on completion_drop. Add a completion-floor rule so arms that fail completely cannot pass drift detection by accident.
+**Open issues addressed in M1 reinforcement (2026-05-02 23:14):**
+- Issue 1 FIXED: Fidelity scoring is now completion-weighted. avg_fidelity = raw_fidelity * (done/total). A 0/N arm cannot score above 0. raw fidelity preserved for diagnostics.
+- Issue 1b FIXED: The `or 10` falsy-coalesce trap that silently promoted a legitimate fidelity=0 to 10 in drift detection is replaced with explicit `is None` check.
+- Issue 3 FIXED: Drift detection adds an absolute completion-floor rule. If A done_ratio < 0.5 and A has more than one task, drift fires unconditionally regardless of B-arm outcome. Catches the both-arms-fail-but-A-failed-worse case.
+- Verified by 10 unit tests in /tmp/test_director_fixes.py covering baseline, synthetic verbose, both-arms-broken, partial-completion, small-task-count edge case, and the legitimate-fid-0 trap.
+
+**Deferred to M2:**
+- Issue 2: Mnemonics ingest timeouts on local MCP server. Best-effort recording today; needs robustness fix in M2 (retry, fallback to disk log, async queue).
 
 ## M2: Three-layer self-improvement (persona + decomposer + critic)
 

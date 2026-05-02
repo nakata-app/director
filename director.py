@@ -1394,13 +1394,19 @@ def cmd_ab(args) -> int:
         except Exception:
             pass
         # Persona fidelity (sadece persona-on arm için kayıtlı)
+        # Completion-weighted: a 0/N done arm cannot legitimately score 10/10 fidelity
+        # because the worker did not actually deliver the artifact. Multiply by done_ratio
+        # to anchor fidelity to outcome, not just stylistic adherence on partial output.
         fidelity_scores = [t.get("persona_fidelity", {}).get("score", -1) for t in state["tasks"]]
         fidelity_scores = [s for s in fidelity_scores if s >= 0]
-        avg_fidelity = sum(fidelity_scores) / len(fidelity_scores) if fidelity_scores else None
+        raw_avg_fidelity = sum(fidelity_scores) / len(fidelity_scores) if fidelity_scores else None
+        done_ratio_for_fid = done / max(1, len(state["tasks"]))
+        avg_fidelity = raw_avg_fidelity * done_ratio_for_fid if raw_avg_fidelity is not None else None
         summary.append({
             "arm": arm_label, "pass": passes, "fail": fails, "no_critic": no_critic,
             "done": done, "avg_log": avg_size, "duration": duration,
             "fidelity": avg_fidelity,
+            "fidelity_raw": raw_avg_fidelity,
         })
         print(f"\n  ARM {arm_label}  ({state['run_id']}):")
         print(f"    critic pass={passes}  fail={fails}  uncategorized={no_critic}")
@@ -1408,7 +1414,10 @@ def cmd_ab(args) -> int:
         print(f"    avg log size: {avg_size:.0f}B")
         print(f"    duration: {duration:.0f}s")
         if avg_fidelity is not None:
-            print(f"    🎭 avg persona-fidelity: {avg_fidelity:.1f}/10  (n={len(fidelity_scores)})")
+            raw_tag = ""
+            if raw_avg_fidelity is not None and abs(raw_avg_fidelity - avg_fidelity) > 0.5:
+                raw_tag = f"  (raw {raw_avg_fidelity:.1f} × completion {done_ratio_for_fid:.2f})"
+            print(f"    🎭 avg persona-fidelity: {avg_fidelity:.1f}/10  (n={len(fidelity_scores)}){raw_tag}")
 
     # Verdict
     if len(summary) == 2:
@@ -1460,8 +1469,20 @@ def cmd_ab(args) -> int:
         b_done_ratio = b["done"] / max(1, len(arms[1][2]["tasks"]))
         completion_drop = b_done_ratio - a_done_ratio  # positive = persona-on lost ground
         log_inflation = (a["avg_log"] - b["avg_log"]) / max(1, b["avg_log"])  # positive = persona-on verbose
-        avg_fid = a.get("fidelity") or 10
-        drift_suspected = (completion_drop > 0.15) or (avg_fid < 7) or (log_inflation > 0.30 and a["fail"] > 0)
+        # Use fidelity if known, else neutral 10. Use explicit `is None` to avoid
+        # the `0 or 10` Python falsy-coalesce trap (a legitimate 0 fidelity must NOT
+        # be silently promoted to 10).
+        avg_fid = a.get("fidelity") if a.get("fidelity") is not None else 10
+        # Absolute completion-floor: if persona-on cannot finish at least half its
+        # tasks, fire drift unconditionally regardless of B-arm outcome. Catches the
+        # pathological case where both arms fail but A failed catastrophically.
+        absolute_completion_fail = a_done_ratio < 0.5 and len(a_state["tasks"]) > 1
+        drift_suspected = (
+            (completion_drop > 0.15)
+            or (avg_fid < 7)
+            or (log_inflation > 0.30 and a["fail"] > 0)
+            or absolute_completion_fail
+        )
         if drift_suspected:
             # Find most-impacted persona from A arm tasks
             impacted = {}
@@ -1488,7 +1509,12 @@ def cmd_ab(args) -> int:
                         log_path = arms[0][1] / "logs" / f"{sample_task['id']}.log"
                         if log_path.exists():
                             sample_log = log_path.read_text()[:3000]
-                    print(f"\n🔁 Auto-tightener: drift suspected (completion_drop={completion_drop:.2f}, fid={avg_fid:.1f}, log_inflation={log_inflation:.2f})")
+                    drift_reasons = []
+                    if completion_drop > 0.15: drift_reasons.append(f"comp_drop={completion_drop:.2f}")
+                    if avg_fid < 7: drift_reasons.append(f"fid={avg_fid:.1f}")
+                    if log_inflation > 0.30 and a["fail"] > 0: drift_reasons.append(f"log_infl={log_inflation:.2f}")
+                    if absolute_completion_fail: drift_reasons.append(f"a_done_ratio={a_done_ratio:.2f}<0.5")
+                    print(f"\n🔁 Auto-tightener: drift suspected ({', '.join(drift_reasons)})")
                     print(f"   Hedef persona: {target_pid} (worst fidelity={worst_score:.1f})")
                     speak(f"Verbose drift tespit edildi, persona {target_pid} sertleştiriliyor.")
                     proposal = auto_tighten_persona(target_pid, sample_log)
