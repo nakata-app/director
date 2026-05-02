@@ -1,0 +1,8 @@
+__pycache__/
+*.pyc
+runs/
+tts_cache/
+opus_quota.json
+opus_usage.jsonl
+mnemonics.log
+*.bak.*-pre-opus
