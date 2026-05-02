@@ -96,4 +96,13 @@ For full repository state at a specific point in time, use git: `git checkout <c
 
 4. Backup file `personas.json.bak.20260502-225718-auto-tighten` (5.2K) preserved the verbose injection state; the SAFE-baseline snapshot from earlier in the day preserves the original good description and is the rollback target if the new tightened version regresses on future fixture testing.
 
+## 2026-05-02 23:05 operator-decision (post-M1 closure)
+
+**Persona:** security
+**Action:** Operator chose to keep the auto-tightened description (247c) as the new working state rather than rolling back to the original baseline (~430c preserved in personas.json.SAFE-baseline-20260502).
+
+**Rationale:** The tightened description is qualitatively sharper, encodes a numerical discipline ("max 1-2 zafiyet, max 2 adım") that the baseline did not, and represents the system's organic output under drift correction. Validating the tightened version against a future fixture suite (M3 work) will determine whether it actually outperforms the baseline in practice. If it regresses, the SAFE-baseline is the rollback target.
+
+**Operator note:** This is the first time a persona description in this repo has been changed by the system rather than by a human, and the change has been accepted as the working state. The accountability boundary moves from human-authored to system-authored. The fixture suite must catch any regression that follows.
+
 <!-- Future entries will be appended below this line by the auto-tighten event handler. -->
