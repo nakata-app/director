@@ -19,7 +19,7 @@ The decomposer is responsible for converting a goal into a typed DAG of tasks wi
   - `expected_content` field presence: ratio of tasks that include the field where the goal mentions a target file path.
   - Task-count stability: deviation from a rolling baseline of task counts for similar goals.
 - Decomposer drift gate fires when the dual-scorer fidelity drops below 7 OR goal-literal preservation drops below 0.7.
-- A new function `auto_tighten_decomposer(sample_goals_and_plans)` calls V4 Pro to rewrite the decomposer system prompt. Sanity bounds: 200-1500 chars (decomposer prompt is structural, longer than persona descriptions).
+- A new function `auto_tighten_decomposer(sample_goals_and_plans)` calls a mixed-family LLM (Llama 3.3 via NIM, since worker is DeepSeek) to rewrite the decomposer system prompt. Sanity bounds: **800-2400 chars** (revised from initial 200-1500, the existing baseline `decomposer_prompt.txt` is ~2285c, so 1500 ceiling was unrealistic; floor raised to 800 to prevent stub collapse).
 - Decomposer prompt rewrites are persisted to a new file `decomposer_prompt.txt` (extracted from director.py constant), with timestamped backups in the same backup convention as personas.
 - Each decomposer-tighten event is mnemonics-recorded with `event=decomposer-tighten`.
 - Each event is appended to `EVOLUTION_LOG.md`.
@@ -38,7 +38,7 @@ The decomposer is responsible for converting a goal into a typed DAG of tasks wi
 
 ## Disciplines (DISCIPLINES.md)
 
-- D1 anti-collapse: sanity bounds 200-1500 chars on tightened prompt; do not allow rewrites that drop below the floor.
+- D1 anti-collapse: sanity bounds 800-2400 chars on tightened prompt; do not allow rewrites that drop below the floor.
 - D2 mixed-family: tightener must use a model family different from the worker LLM family. If the project's worker is DeepSeek, tightener must be NIM Llama or Gemini Flash.
 - D5 backup before write: timestamped backup of `decomposer_prompt.txt` before each rewrite.
 - D6 public evolution log: append to `EVOLUTION_LOG.md` on every event.

@@ -41,7 +41,7 @@ Four milestones, sequenced. Each milestone has explicit acceptance criteria. Ski
 - Backup and rollback semantics match persona path.
 - Composite drift detection across all three (persona + decomposer + critic) does not produce thrashing or oscillation.
 
-**Status:** not started. Pending M1 closure.
+**Status:** **in progress**. T01 (decomposer auto-tighten) landed 2026-05-02 23:30: drift signals + scorer + gate + Llama-3.3 mixed-family tightener + atomic apply + backup + wrapper, 8/8 unit tests green, live A/B verified, EVOLUTION_LOG entry recorded. T02 (critic-tighten), T03 (mnemonics-robustness), T04 (fixture-scaffold) remain.
 
 ## M3: Multi-domain with ground-truth fixture suites
 

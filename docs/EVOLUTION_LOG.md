@@ -105,4 +105,14 @@ For full repository state at a specific point in time, use git: `git checkout <c
 
 **Operator note:** This is the first time a persona description in this repo has been changed by the system rather than by a human, and the change has been accepted as the working state. The accountability boundary moves from human-authored to system-authored. The fixture suite must catch any regression that follows.
 
+## 2026-05-02 23:30 scaffolding M2-T01 decomposer-tighten
+
+**Action:** Implementation landed. Decomposer system prompt extracted from inline `DECOMP_PROMPT` constant to `decomposer_prompt.txt`. Added drift signals (`goal_literal_preservation`, `expected_content_presence`, `task_count_deviation`), composite scorer `score_decomposer_fidelity`, drift gate `decomposer_drift_fires`, mixed-family tightener `auto_tighten_decomposer` (Llama 3.3 via NIM since worker is DeepSeek), atomic apply with timestamped backup, and wrapper `tighten_decomposer_if_drift` (gate+tighten+apply+log+mnemonics).
+
+**Test coverage:** 8 scenarios / 20 sub-assertions in `tests/test_decomposer_drift.py`, all green. Live A/B verification: paraphrase-prone goal triggered drift gate (literal=0.14, score=7.15), Llama tightener produced valid 2255-2394c replacement (density check: contains `expected_content`, `depends_on`, `brief`), apply+atomic-write+backup verified, JSON-schema parse on test goal verified via real NIM decompose call.
+
+**Sanity bound revision:** Ticket originally specified 200-1500 chars. Baseline `decomposer_prompt.txt` is ~2285c (structural prompt with JSON schema block), so ceiling raised to 2400 and floor to 800 to prevent both stub collapse and unrealistic compression demands. Ticket and acceptance criteria updated.
+
+**Operator note:** No live decomposer-tighten event has fired yet on a real run. This entry records scaffolding only. The first organic event will be appended by `tighten_decomposer_if_drift` itself when a production A/B run emits a paraphrase-drift plan.
+
 <!-- Future entries will be appended below this line by the auto-tighten event handler. -->

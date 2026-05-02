@@ -140,47 +140,16 @@ def resolve_nim_key() -> str:
     return ""
 
 # --- decomposition ---
-DECOMP_PROMPT = """Sen bir project director'sın. Kullanıcının verdiği hedefi paralel çalışılabilecek alt-task'lara böl.
+DECOMPOSER_PROMPT_PATH = Path(os.path.expanduser("~/.claude/director")) / "decomposer_prompt.txt"
 
-Kurallar:
-- 2-6 task arası (daha az = paralelleşme yok, daha çok = chaos)
-- Bir task BAŞKA bir task'ın çıktısını/sonucunu kullanıyorsa depends_on ile belirt
-- Her task tek bir Claude session'ında bitebilecek BÜYÜKLÜKTE olmalı
-- Hedef hâlihazırda atomik ise (tek bir küçük iş) → 1 task döndür
-- complexity: 'low' (basit dosya/komut, ~5-10dk), 'med' (refactor/modifikasyon, ~20-30dk), 'high' (mimari/araştırma, ~45-60dk)
-- complexity'ye göre timeout_min otomatik atanır (low=10, med=30, high=60); özel durumda override et
-- expected_artifacts: Eğer task somut bir dosya/dosyalar üretmeli ise mutlak yolları liste olarak ver (örn. ["/tmp/foo/L1.txt"]). Hedefte geçen dosya adı veya yolu BIRAKMADAN aynen aktar — paraphrase etme. Üretilecek dosya yoksa boş liste []
-- expected_content: Hedefte üretilecek içerik LITERAL string olarak (boşluk, satır, büyük/küçük harf dahil) belirtildiyse, dosya yolunu key, beklenen string'i value yaparak object döndür (örn. {"/tmp/foo/L1.txt": "ALPHA BETA"}). Hedefte literal içerik yoksa veya tartışmalıysa boş object {}. Bu alan child'a quote içinde verilecek, paraphrase yasak.
-- persona: task'ın domain'ine göre seç. Seçenekler:
-  - 'security' (auth, vuln, exploit, token, audit)
-  - 'design' (UI, UX, frontend, CSS, accessibility)
-  - 'performance' (perf, latency, memory, profiling)
-  - 'research' (bug bounty, recon, OSINT, CVE)
-  - 'refactor' (cleanup, dead code, teknik borç)
-  - 'implementer' (yeni feature, endpoint, generic kod)
-  - 'ataturk' (stratejik, mimari karar, plan)
-  - 'default' (hiçbiri uymuyorsa)
+def load_decomposer_prompt() -> str:
+    """Read decomposer system prompt from disk. Mutated by auto_tighten_decomposer.
+    M2-T01: extracted from inline constant so the auto-tighten loop can rewrite it."""
+    if not DECOMPOSER_PROMPT_PATH.exists():
+        raise FileNotFoundError(f"decomposer_prompt.txt not found at {DECOMPOSER_PROMPT_PATH}")
+    return DECOMPOSER_PROMPT_PATH.read_text()
 
-Çıktı SADECE valid JSON, başka hiçbir metin ekleme. Markdown code fence yok.
-
-{
-  "summary": "Hedefin 1 cümle yorumu",
-  "tasks": [
-    {
-      "id": "task-1",
-      "title": "kısa başlık",
-      "brief": "Claude'a verilecek 2-3 cümlelik talimat",
-      "cwd": "/abs/path veya '' (boşsa parent cwd kullanılır)",
-      "depends_on": [],
-      "complexity": "low|med|high",
-      "persona": "security|design|performance|research|refactor|implementer|ataturk|default",
-      "timeout_min": 30,
-      "expected_artifacts": ["/abs/path/file.ext"],
-      "expected_content": {"/abs/path/file.ext": "literal beklenen icerik"}
-    }
-  ]
-}
-"""
+DECOMP_PROMPT = load_decomposer_prompt()
 
 COMPLEXITY_TIMEOUT = {"low": 10, "med": 30, "high": 60}
 
@@ -281,6 +250,27 @@ Doğrulanmış formül (Director A/B harness verileri):
 {sample}
 
 Yeni description üret. SADECE yeni description'ı tek paragraf olarak yaz, başka hiçbir metin/açıklama yok. Markdown yok, kod fence yok.
+"""
+
+DECOMPOSER_TIGHTEN_PROMPT = """Görev: Aşağıdaki "ESKİ DECOMPOSER PROMPT" bir LLM'e verilen SİSTEM TALIMATIDIR (decomposer prompt). Drift gözlendi: hedef literal'leri brief'lerde paraphrase edildi ve/veya expected_content alanı atlandı. Sen bu TALIMAT METNINI sertleştirilmiş haliyle yeniden yazacaksın.
+
+ÖNEMLİ — Çıktı kuralları:
+- Çıktın bir TALIMAT METNİDİR ("Sen bir project director'sın..." gibi başlar). JSON ÇIKARMA. Plan örneği üretme. Sadece yeni decomposer prompt metni.
+- Uzunluk: 1200-1500 karakter arası.
+- "expected_content", "depends_on", "brief" kelimeleri MUTLAKA geçmeli (içerik yoğunluğu kontrolü).
+- "paraphrase YASAK" kuralı net belirtilmeli.
+- JSON şema bloğu korunmalı: id, title, brief, cwd, depends_on, complexity, persona, timeout_min, expected_artifacts, expected_content alanları.
+- Persona seçenekleri listesi (security, design, performance, research, refactor, implementer, ataturk, default) korunmalı.
+- Markdown code fence YASAK.
+
+[ESKİ DECOMPOSER PROMPT — drift gözlendi, sertleştir]
+{old_prompt}
+
+[DRIFT KANITI — bu örnek goal verildiğinde eski prompt aşağıdaki paraphrase'lı planı üretti]
+Goal: {sample_goal}
+Üretilen Plan: {sample_plan}
+
+ŞİMDİ yeni TALIMAT METNINI yaz (bir LLM'in sistem prompt'u olacak), 1200-1500 karakter:
 """
 
 PERSONA_FIDELITY_PROMPT = """Sen bir kalite değerlendiricisin. Bir alt-task'ın child output'unun, **verilen persona description'ına sadakatini** 0-10 ölçeğinde puanlayacaksın.
@@ -648,6 +638,189 @@ def apply_tightened_persona(persona_id: str, new_desc: str) -> bool:
     except Exception as e:
         print(f"⚠️  apply tighten failed: {e}", file=sys.stderr)
         return False
+
+# --- M2-T01: decomposer drift signals + auto-tighten ---
+DECOMPOSER_STOP_WORDS = {"the", "and", "için", "olan", "sonra", "veya", "with", "from",
+                         "into", "this", "that", "şunu", "bunu", "olarak"}
+
+def _decomposer_literals(text: str) -> tuple[set[str], set[str]]:
+    """Return (exact_paths_and_quoted, 4char_word_stems).
+    Stem proxy handles Turkish suffixes (api.py'yi vs api.py, incele vs incelenecek).
+    Note: only catches verbatim drift; semantic paraphrase is M3's deeper net.
+    """
+    paths = set(re.findall(r"/[A-Za-z0-9._/-]+", text))
+    quoted = set(re.findall(r'"([^"]+)"', text))
+    words = re.findall(r"[A-Za-zÇĞİÖŞÜçğıöşü_][A-Za-zÇĞİÖŞÜçğıöşü0-9_]{3,}", text)
+    stems = {w[:4].lower() for w in words if w.lower() not in DECOMPOSER_STOP_WORDS}
+    return (paths | quoted), stems
+
+def goal_literal_preservation(goal: str, plan: dict) -> float:
+    g_exact, g_stems = _decomposer_literals(goal)
+    g_total = g_exact | g_stems
+    if not g_total:
+        return 1.0
+    briefs = " ".join(t.get("brief", "") for t in plan.get("tasks", []))
+    b_exact, b_stems = _decomposer_literals(briefs)
+    overlap = (g_exact & b_exact) | (g_stems & b_stems)
+    return len(overlap) / len(g_total)
+
+def expected_content_presence(plan: dict) -> float:
+    """Of tasks whose brief mentions a target file path, how many declare expected_content?"""
+    tasks = plan.get("tasks", [])
+    candidates = [t for t in tasks
+                  if re.search(r"/[A-Za-z0-9._/-]+\.[a-z]{1,4}\b", t.get("brief", ""))]
+    if not candidates:
+        return 1.0
+    declared = sum(1 for t in candidates if t.get("expected_content"))
+    return declared / len(candidates)
+
+def task_count_deviation(plan: dict, baseline_avg: float) -> float:
+    """Absolute deviation from rolling baseline of task counts for similar goals."""
+    n = len(plan.get("tasks", []))
+    if baseline_avg <= 0:
+        return 0.0
+    return abs(n - baseline_avg) / baseline_avg
+
+def score_decomposer_fidelity(goal: str, plan: dict, baseline_avg: float = 4.0) -> dict:
+    """Composite 0-10 scorer on three signals:
+    - goal-literal preservation (verbatim from goal carried into briefs)
+    - expected_content presence ratio
+    - task-count stability vs baseline
+    Returns dict with score + per-signal breakdown for diagnostics.
+    """
+    lit = goal_literal_preservation(goal, plan)
+    exp = expected_content_presence(plan)
+    dev = task_count_deviation(plan, baseline_avg)
+    s_lit = lit * 3.33
+    s_exp = exp * 3.33
+    s_dev = max(0.0, 3.34 - min(dev, 1.0) * 3.34)
+    score = round(s_lit + s_exp + s_dev, 2)
+    return {"score": score, "literal": round(lit, 2),
+            "expected": round(exp, 2), "deviation": round(dev, 2)}
+
+def decomposer_drift_fires(score: float, literal: float) -> bool:
+    """Drift gate: composite < 7 OR literal preservation < 0.7."""
+    return score < 7.0 or literal < 0.7
+
+def _decomposer_content_density_ok(prompt: str) -> bool:
+    """D1 anti-collapse: tightened prompt must still contain structural keywords."""
+    required = ["expected_content", "depends_on", "brief"]
+    return all(k in prompt for k in required)
+
+DECOMPOSER_TIGHTENER_MODEL = "meta/llama-3.3-70b-instruct"  # Meta family != DeepSeek worker
+
+def call_nim_llama(messages: list[dict]) -> str:
+    """Mixed-family tightener call: routes through NIM with Llama 3.3 to avoid same-family bias.
+    D2 discipline: tightener must use a different LLM family than the worker (DeepSeek)."""
+    key = resolve_nim_key()
+    if not key:
+        raise RuntimeError("NIM API key yok — Llama tightener çağrılamadı")
+    return _post_chat(NIM_URL, DECOMPOSER_TIGHTENER_MODEL, key, messages)
+
+def auto_tighten_decomposer(sample_goal: str, sample_plan: dict) -> dict | None:
+    """Generate a tightened decomposer system prompt via Llama 3.3 (mixed-family from DeepSeek worker).
+    Sanity: 200-1500 chars + structural keywords present (D1 anti-collapse).
+    Returns {'old': str, 'new': str} or None on failure.
+    """
+    try:
+        old_prompt = load_decomposer_prompt()
+    except Exception:
+        return None
+    plan_json = json.dumps(plan_compact_for_tighten(sample_plan), ensure_ascii=False)[:1500]
+    prompt = (DECOMPOSER_TIGHTEN_PROMPT
+              .replace("{old_prompt}", old_prompt)
+              .replace("{sample_goal}", sample_goal[:500])
+              .replace("{sample_plan}", plan_json))
+    try:
+        new_prompt = call_nim_llama([
+            {"role": "system", "content": "Sen JSON-FREE plain text output veren prompt-tightener uzmanısın. Sadece yeni decomposer prompt'unu yaz."},
+            {"role": "user", "content": prompt},
+        ]).strip()
+    except Exception:
+        return None
+    new_prompt = re.sub(r"^```.*?\n|```$", "", new_prompt, flags=re.DOTALL).strip()
+    new_prompt = new_prompt.strip('"\'`')
+    # Sanity bounds: baseline DECOMP_PROMPT is ~2285c, so ceiling raised to 2400 (vs ticket's 1500).
+    # Floor 800 prevents collapse to "decompose this goal into tasks" stub. Ticket updated 2026-05-02.
+    if not (800 <= len(new_prompt) <= 2400):
+        return None
+    if not _decomposer_content_density_ok(new_prompt):
+        return None
+    if new_prompt == old_prompt:
+        return None
+    return {"old": old_prompt, "new": new_prompt}
+
+def plan_compact_for_tighten(plan: dict) -> dict:
+    """Strip plan to drift-relevant fields for prompting."""
+    return {
+        "summary": plan.get("summary", ""),
+        "tasks": [{"id": t.get("id"), "brief": t.get("brief", "")[:200],
+                   "expected_artifacts": t.get("expected_artifacts", []),
+                   "expected_content": t.get("expected_content", {})}
+                  for t in plan.get("tasks", [])],
+    }
+
+def apply_tightened_decomposer(new_prompt: str) -> bool:
+    """Atomically update decomposer_prompt.txt with timestamped backup."""
+    try:
+        ts = datetime.now().strftime("%Y%m%d-%H%M%S")
+        path = DECOMPOSER_PROMPT_PATH
+        backup = path.with_suffix(f".txt.bak.{ts}-auto-tighten")
+        backup.write_text(path.read_text())
+        tmp = path.with_suffix(".txt.tmp")
+        tmp.write_text(new_prompt)
+        tmp.replace(path)
+        return True
+    except Exception as e:
+        print(f"⚠️  apply decomposer tighten failed: {e}", file=sys.stderr)
+        return False
+
+def tighten_decomposer_if_drift(goal: str, plan: dict, baseline_avg: float = 4.0,
+                                 dry_run: bool = True) -> dict:
+    """Drift gate + tighten + (optional) apply + log + mnemonics, atomic.
+    Returns {'fired': bool, 'applied': bool, 'old_len': int, 'new_len': int, 'signals': dict}.
+    Caller decides dry_run; CLI surface adds it later.
+    """
+    fid = score_decomposer_fidelity(goal, plan, baseline_avg)
+    fires = decomposer_drift_fires(fid["score"], fid["literal"])
+    out = {"fired": fires, "applied": False, "old_len": 0, "new_len": 0, "signals": fid}
+    if not fires:
+        return out
+    proposal = auto_tighten_decomposer(goal, plan)
+    if not proposal:
+        return out
+    out["old_len"] = len(proposal["old"])
+    out["new_len"] = len(proposal["new"])
+    if dry_run:
+        return out
+    if apply_tightened_decomposer(proposal["new"]):
+        out["applied"] = True
+        ts = datetime.now().strftime("%Y-%m-%d %H:%M")
+        mnemonics_record(
+            f"[{ts}] director decomposer-tighten: signals="
+            f"(score={fid['score']}, literal={fid['literal']}, exp={fid['expected']}, dev={fid['deviation']}) | "
+            f"old={out['old_len']}c -> new={out['new_len']}c",
+            ns="director",
+        )
+        append_evolution_log("decomposer-tighten", {
+            "score": fid["score"], "literal": fid["literal"],
+            "old": out["old_len"], "new": out["new_len"],
+        })
+    return out
+
+def append_evolution_log(event_kind: str, details: dict) -> None:
+    """Append a single-line entry to docs/EVOLUTION_LOG.md.
+    D6 discipline: every tighten event is publicly logged."""
+    log_path = DIRECTOR_HOME / "docs" / "EVOLUTION_LOG.md"
+    if not log_path.parent.exists():
+        return
+    ts = datetime.now().strftime("%Y-%m-%d %H:%M")
+    line = f"- [{ts}] event={event_kind} " + " ".join(f"{k}={v}" for k, v in details.items())
+    try:
+        with open(log_path, "a") as f:
+            f.write(line + "\n")
+    except Exception:
+        pass
 
 def score_persona_fidelity(persona_id: str, persona: dict, task: dict, output: str) -> dict:
     """Dual-scorer fidelity (V4 Pro primary + V4 Flash second-opinion). Reduces single-model bias.
