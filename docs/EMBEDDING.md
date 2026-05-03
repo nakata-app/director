@@ -12,7 +12,7 @@ sys.path.insert(0, "/path/to/.claude/director")
 import director
 ```
 
-A pip-installable package layout is on the M5 roadmap; until then, treat the source path as the install path.
+There is no committed roadmap entry for a pip-installable layout yet; for now, treat the source path as the install path.
 
 ## Public surface
 

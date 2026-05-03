@@ -46,7 +46,7 @@ The full suite is fast (single-digit seconds). Always keep it green on your bran
 
 ## Code style
 
-- Single-file core (`director.py`) is intentional. Until M5, keep it that way; do not split into a package.
+- Single-file core (`director.py`) is intentional. Keep it that way; do not split into a package without an explicit roadmap decision and maintainer agreement.
 - Match the surrounding style. No new code formatters, no aggressive linting commits unrelated to your change.
 - Type hints on new function signatures (`from __future__ import annotations` is in effect).
 - No new external imports without explicit approval. Standard library + the existing provider SDKs (`requests`, `urllib`) are the baseline.
