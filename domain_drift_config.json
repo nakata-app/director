@@ -12,14 +12,23 @@
     "decomposer_score_floor": 7.5,
     "decomposer_literal_floor": 0.8,
     "critic_precision_floor": 0.85,
-    "persona_completion_drop_threshold": 0.10,
-    "persona_log_inflation_threshold": 0.20
+    "persona_completion_drop_threshold": 0.1,
+    "persona_log_inflation_threshold": 0.2
   },
   "design": {
     "_doc": "Design/UI tasks expect exploration and divergence. Permissive on completion drop and log inflation; persona fidelity slightly relaxed (creativity > literalism).",
     "decomposer_literal_floor": 0.55,
     "persona_completion_drop_threshold": 0.25,
-    "persona_log_inflation_threshold": 0.50,
+    "persona_log_inflation_threshold": 0.5,
     "persona_fidelity_floor": 6.0
+  },
+  "docs": {
+    "decomposer_score_floor": 6.0,
+    "decomposer_literal_floor": 0.6,
+    "critic_precision_floor": 0.75,
+    "critic_recall_floor": 0.8,
+    "persona_completion_drop_threshold": 0.2,
+    "persona_log_inflation_threshold": 0.5,
+    "persona_fidelity_floor": 6.5
   }
 }
