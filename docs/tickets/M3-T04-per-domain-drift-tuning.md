@@ -1,6 +1,6 @@
 # M3-T04: Per-domain drift signal tuning
 
-**Status:** open
+**Status:** closed — 2026-05-03 02:35 (41/41 in domain-config test, cumulative 217/0 across 9 suites.)
 **Owner:** Architect → Implementer → Reviewer
 **Milestone:** M3
 **Estimated touch:** ~40-80 lines director.py + 1 test file

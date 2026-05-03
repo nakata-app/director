@@ -1,6 +1,6 @@
 # M2-T03: Mnemonics ingest robustness
 
-**Status:** open
+**Status:** closed — 2026-05-03 00:15 (18/18 sub-assertions green, JSONL fallback + replay CLI shipped.)
 **Owner:** Architect → Implementer → Reviewer
 **Milestone:** M2
 **Estimated touch:** ~50 lines director.py + 1 small test

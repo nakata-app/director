@@ -4,7 +4,9 @@ runs/
 tts_cache/
 opus_quota.json
 opus_usage.jsonl
+director_usage.jsonl
 mnemonics.log
+smoke_test.txt
 *.bak.*-pre-opus
 *.bak.*-auto-tighten
 .metis/

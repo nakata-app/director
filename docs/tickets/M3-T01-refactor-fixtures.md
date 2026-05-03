@@ -1,6 +1,6 @@
 # M3-T01: Refactor domain fixtures
 
-**Status:** open
+**Status:** closed — 2026-05-03 01:00 (35/35 sub-assertions green.)
 **Owner:** Architect → Tester → Implementer → Reviewer
 **Milestone:** M3
 **Estimated touch:** ~5 fixture directories + 0 director.py lines (runner already lands in T04)

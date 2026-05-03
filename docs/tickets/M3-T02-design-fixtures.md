@@ -1,6 +1,6 @@
 # M3-T02: Design domain fixtures
 
-**Status:** open
+**Status:** closed — 2026-05-03 01:25 (38/38 sub-assertions green.)
 **Owner:** Architect → Tester → Implementer → Reviewer
 **Milestone:** M3
 **Estimated touch:** ~5 fixture directories

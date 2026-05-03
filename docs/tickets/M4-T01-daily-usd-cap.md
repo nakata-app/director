@@ -1,6 +1,6 @@
 # M4-T01: Daily USD cap + budget reporting
 
-**Status:** open
+**Status:** closed — 2026-05-03 (commit 30dda10. Budget gate + reporting live.)
 **Owner:** Architect → Implementer → Reviewer
 **Milestone:** M4
 **Estimated touch:** ~120-200 lines director.py + 1 test file + 1 CLI subcommand

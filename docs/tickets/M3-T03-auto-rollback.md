@@ -1,6 +1,6 @@
 # M3-T03: Auto-rollback on fixture pass-rate regression
 
-**Status:** open
+**Status:** closed — 2026-05-03 01:50 (19/19 sub-assertions green, live simulation passed, Llama 3.3 review PASS.)
 **Owner:** Architect → Tester → Implementer → Reviewer
 **Milestone:** M3
 **Estimated touch:** ~80-130 lines director.py + 1 test file

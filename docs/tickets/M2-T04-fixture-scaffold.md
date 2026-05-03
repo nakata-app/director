@@ -1,6 +1,6 @@
 # M2-T04: Fixture suite scaffold (M3 prerequisite)
 
-**Status:** open
+**Status:** closed — 2026-05-03 00:35 (15/15 sub-assertions green, 5 security fixtures pass live.)
 **Owner:** Architect → Tester → Implementer → Reviewer
 **Milestone:** M2 (soft-start of M3 prerequisite)
 **Estimated touch:** ~100 lines director.py + new fixtures directory

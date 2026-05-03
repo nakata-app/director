@@ -1,6 +1,6 @@
 # M2-T02: Critic auto-tighten
 
-**Status:** open
+**Status:** closed — 2026-05-02 23:55 (21/21 sub-assertions green, live A/B verified.)
 **Owner:** Architect → Tester → Implementer → Reviewer
 **Milestone:** M2
 **Estimated touch:** ~80-150 lines director.py + 1 new test file

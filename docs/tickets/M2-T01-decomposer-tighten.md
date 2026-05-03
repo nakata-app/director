@@ -1,6 +1,6 @@
 # M2-T01: Decomposer auto-tighten
 
-**Status:** open
+**Status:** closed — 2026-05-02 23:30 (8/8 test green, live A/B verified. Commit batch: M2 close.)
 **Owner:** Architect (this ticket) → Tester (writes failing test) → Implementer (writes code) → Reviewer (verdict)
 **Milestone:** M2
 **Estimated touch:** ~80-150 lines director.py + 1 new test file
