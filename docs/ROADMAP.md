@@ -65,7 +65,7 @@ Four milestones, sequenced. Each milestone has explicit acceptance criteria. Ski
 - Operator playbook (`OPERATOR.md`) is sufficient for a third party to debug a stuck run, audit an evolution event, and roll back a bad tighten.
 - Cost cap and budget reporting are implemented and surfaced (`DIRECTOR_DAILY_USD_CAP`).
 
-**Status:** all four code-side tickets closed 2026-05-03. M4 acceptance has two external dependencies left (a downstream product calling `run`/`ab` in a real user flow, and a non-original maintainer landing a non-trivial PR) before the milestone itself can flip to **Closed**.
+**Status:** **CLOSED** as of 2026-05-03. All four code-side tickets closed. Both external acceptance criteria met: (1) Pistachio admin panel calls `director.run()` via HTTP microservice (`director.nakata.app`) in a real admin user flow, commit `6dce862c` in nakata-app/nakata-app; (2) PR #1 (`add-docs-domain`) landed and merged, new `docs` domain, Documentation Reviewer persona, 5 fixtures, 36-assertion test file, full AUTHORING.md workflow followed.
 
 **Ticket sequencing for M4 (chosen 2026-05-03):**
 - ~~T01: Daily USD cap + budget reporting (`DIRECTOR_DAILY_USD_CAP`).~~ **Closed** in 30dda10.
