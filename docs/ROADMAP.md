@@ -65,13 +65,13 @@ Four milestones, sequenced. Each milestone has explicit acceptance criteria. Ski
 - Operator playbook (`OPERATOR.md`) is sufficient for a third party to debug a stuck run, audit an evolution event, and roll back a bad tighten.
 - Cost cap and budget reporting are implemented and surfaced (`DIRECTOR_DAILY_USD_CAP`).
 
-**Status:** in progress (M3 closed 2026-05-03 02:35; M4-T01 closed 30dda10; M4-T02 closed 2026-05-03; M4-T03 + M4-T04 next).
+**Status:** all four code-side tickets closed 2026-05-03. M4 acceptance has two external dependencies left (a downstream product calling `run`/`ab` in a real user flow, and a non-original maintainer landing a non-trivial PR) before the milestone itself can flip to **Closed**.
 
 **Ticket sequencing for M4 (chosen 2026-05-03):**
 - ~~T01: Daily USD cap + budget reporting (`DIRECTOR_DAILY_USD_CAP`).~~ **Closed** in 30dda10.
 - ~~T02: Operator playbook expansion (debug stuck run, audit evolution event, roll back a bad tighten via fixture re-replay).~~ **Closed** 2026-05-03 (OPERATOR.md grew six new sections covering status/cancel/attach/recover/budget commands, crash recovery via `state.main_error`, evolution audit, fixture re-replay during rollback, M3-aware cron, and an updated weekly health check). Bonus: silent-death fix + `director recover RUN_ID` shipped in 97f2556.
-- T03: Programmatic Director API (library entry points for `run` / `ab` / `tighten_*_if_drift`) so a downstream product can embed Director without subprocess.
-- T04: External contributor flow, persona/signal/domain authoring guide + a sample PR that a fresh contributor can land end-to-end.
+- ~~T03: Programmatic Director API (library entry points for `run` / `ab` / `tighten_*_if_drift`) so a downstream product can embed Director without subprocess.~~ **Closed** 2026-05-03 (`run`, `ab`, `recover` wrappers in `director.py`; `__all__` exports `tighten_*_if_drift` plus disk-truth helpers; `docs/EMBEDDING.md` covers install path, public surface, examples, env reference, error contract).
+- ~~T04: External contributor flow, persona/signal/domain authoring guide + a sample PR that a fresh contributor can land end-to-end.~~ **Closed** 2026-05-03 (`CONTRIBUTING.md` top-level workflow; `.github/PULL_REQUEST_TEMPLATE.md` checklist; `docs/AUTHORING.md` deep how-to for persona / domain / signal additions; `docs/SAMPLE_CONTRIBUTION.md` end-to-end walkthrough adding a new `docs` domain).
 
 ## Sequencing rules
 
