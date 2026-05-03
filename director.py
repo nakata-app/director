@@ -816,17 +816,20 @@ def critique_plan(plan: dict, goal: str) -> dict:
     result.setdefault("suggestions", "")
     return result
 
-def verify_artifacts(task: dict) -> dict:
+def verify_artifacts(task: dict, quick: bool = False) -> dict:
     """Disk-based artifact verification with short retry window for fs-flush race.
     Independent of LLM critic. Returns {'verdict':'pass'|'fail','reason':'...'}.
-    Pass if no artifacts declared. Enforces expected_content literal match if declared."""
+    Pass if no artifacts declared. Enforces expected_content literal match if declared.
+    quick=True: single attempt, no retry (use during recover when process is already dead — no fs race)."""
     artifacts = task.get("expected_artifacts") or []
     expected_content = task.get("expected_content") or {}
     if not artifacts:
         return {"verdict": "pass", "reason": "no artifacts declared"}
-    # Short retry: child may have exited before fs flush completed
+    # Short retry: child may have exited before fs flush completed.
+    # 10 sleeps × 1.0s = 10s race window (was 4×0.4s=1.6s, too tight for 5+ task plans).
+    max_attempts = 1 if quick else 11
     last_state = None
-    for attempt in range(5):  # 0, 0.4, 0.8, 1.2, 1.6s = 4s total
+    for attempt in range(max_attempts):
         missing, empty, mismatch = [], [], []
         for path in artifacts:
             p = Path(path)
@@ -848,8 +851,8 @@ def verify_artifacts(task: dict) -> dict:
         last_state = (missing, empty, mismatch)
         if not (missing or empty or mismatch):
             return {"verdict": "pass", "reason": f"{len(artifacts)} artifact(s) ok"}
-        if attempt < 4:
-            time.sleep(0.4)
+        if attempt < max_attempts - 1:
+            time.sleep(1.0)
     missing, empty, mismatch = last_state
     parts = []
     if missing: parts.append(f"missing: {missing}")
@@ -1935,6 +1938,26 @@ def spawn_ready_tasks(rd: Path, state: dict, run_id: str) -> int:
     return spawned
 
 def monitor_loop(rd: Path, state: dict, run_id: str) -> None:
+    """Public entry: catches catastrophic main-loop exceptions, preserves state for `director recover RUN_ID`.
+    KeyboardInterrupt passes through (cmd_run/cmd_attach handle detach)."""
+    try:
+        _monitor_loop_inner(rd, state, run_id)
+    except KeyboardInterrupt:
+        raise
+    except Exception as e:
+        import traceback
+        err = f"{type(e).__name__}: {e}\n{traceback.format_exc()}"
+        state["main_error"] = err[:3000]
+        state["main_error_at"] = datetime.now(timezone.utc).isoformat()
+        try:
+            write_state(rd, state)
+        except Exception:
+            pass
+        print(f"\n💥 Director main loop crashed: {type(e).__name__}: {e}", file=sys.stderr)
+        print(f"   State preserved. Run:  director recover {run_id}", file=sys.stderr)
+        raise
+
+def _monitor_loop_inner(rd: Path, state: dict, run_id: str) -> None:
     max_retries = state.get("max_retries", DEFAULT_MAX_RETRIES)
     while True:
         any_running = False
@@ -2421,6 +2444,91 @@ def cmd_cancel(args) -> int:
     print(f"Cancelled {killed} running task(s); sealed {sealed} live-feed events.")
     return 0
 
+def cmd_recover(args) -> int:
+    """Stale 'running' task'ları diskten gerçeğe çek. Main process sessizce öldükten sonra
+    state.json'da 'running' kalmış task'ları artifact + PID + log heartbeat'ine göre done/failed'e set et."""
+    rd = RUNS_DIR / args.run_id
+    if not (rd / "state.json").exists():
+        print(f"Run bulunamadı: {args.run_id}", file=sys.stderr)
+        return 1
+    state = load_state(rd)
+    if state.get("finished") and not args.force:
+        print(f"Run zaten finished: {state['finished']}. --force ile yine de tara.")
+        return 0
+    if state.get("main_error"):
+        first_line = state["main_error"].splitlines()[0]
+        when = state.get("main_error_at", "?")
+        print(f"⚠ Önceki crash: [{when}] {first_line}")
+    stale = [t for t in state["tasks"] if t.get("status") == "running"]
+    if not stale:
+        print(f"Düzeltilecek 'running' task yok ({len(state['tasks'])} task toplam).")
+        if not state.get("finished"):
+            state["finished"] = datetime.now(timezone.utc).isoformat()
+            state["recovered_at"] = state["finished"]
+            write_state(rd, state)
+            print("→ Run finished olarak işaretlendi.")
+        return 0
+    print(f"🔧 Recover {args.run_id}: {len(stale)} stale 'running' task")
+    fixed = 0
+    skipped_alive = []
+    for t in stale:
+        pid = t.get("pid")
+        log_path = rd / "logs" / f"{t['id']}.log"
+        log_size = log_path.stat().st_size if log_path.exists() else 0
+        log_age_s = None
+        if log_path.exists():
+            try:
+                log_age_s = time.time() - log_path.stat().st_mtime
+            except Exception:
+                pass
+        pid_alive = False
+        if pid:
+            try:
+                os.kill(pid, 0)
+                pid_alive = True
+            except (ProcessLookupError, PermissionError, OSError):
+                pid_alive = False
+        # PID hâlâ canlı + log son 30sn'de büyümüş → gerçekten koşuyor, atla (force-kill istenmedikçe)
+        log_recent = log_age_s is not None and log_age_s < 30
+        if pid_alive and log_recent and not args.force_kill:
+            print(f"  [{t['id']}] PID={pid} hâlâ aktif (log {log_size}B, age={log_age_s:.0f}s). --force-kill ile öldür.")
+            skipped_alive.append(t["id"])
+            continue
+        if pid_alive and args.force_kill:
+            try:
+                os.killpg(os.getpgid(pid), signal.SIGTERM)
+                print(f"  [{t['id']}] PID={pid} killed (--force-kill)")
+                pid_alive = False
+            except Exception as e:
+                print(f"  [{t['id']}] kill hata: {e}")
+        # Karar: artifact varsa done, yoksa failed (quick=True: process zaten ölü, fs flush race yok)
+        artifact_result = verify_artifacts(t, quick=True)
+        t["artifact_check"] = artifact_result
+        t["recovered"] = True
+        t["ended"] = datetime.now(timezone.utc).isoformat()
+        if artifact_result["verdict"] == "pass":
+            t["status"] = "done"
+            t["exit_code"] = 0
+            print(f"  [{t['id']}] → done (artifact ok: {artifact_result['reason']}, log {log_size}B)")
+        else:
+            t["status"] = "failed"
+            t["exit_code"] = -1
+            print(f"  [{t['id']}] → failed (artifact: {artifact_result['reason']}, log {log_size}B)")
+        fixed += 1
+    state["recovered_at"] = datetime.now(timezone.utc).isoformat()
+    counts = {"done": 0, "failed": 0, "timeout": 0, "pending": 0, "running": 0, "cancelled": 0}
+    for t in state["tasks"]:
+        s = t.get("status", "pending")
+        counts[s] = counts.get(s, 0) + 1
+    if counts["running"] == 0 and counts["pending"] == 0 and not state.get("finished"):
+        state["finished"] = state["recovered_at"]
+    write_state(rd, state)
+    print(f"\n✅ Recovery: {fixed} task düzeltildi, {len(skipped_alive)} hâlâ canlı atlandı.")
+    print(f"   Final: done={counts['done']}, failed={counts['failed']}, timeout={counts['timeout']}, pending={counts['pending']}, running={counts['running']}")
+    if skipped_alive:
+        print(f"   Atlanan canlı PID'ler: {skipped_alive}  → bekle ya da: director recover {args.run_id} --force-kill")
+    return 0
+
 # --- M3-T03: auto-rollback wiring (HIGH blast — disk-truth only, no LLM) ---
 ROLLBACK_GUARD: dict[str, int] = {}  # tightener_event_key → rollback count
 ROLLBACK_GUARD_LOCK = threading.Lock()
@@ -2885,6 +2993,15 @@ def main() -> int:
     p_cn = sub.add_parser("cancel", help="Running task'ları öldür")
     p_cn.add_argument("run_id")
     p_cn.set_defaults(func=cmd_cancel)
+
+    p_rc = sub.add_parser("recover",
+                          help="Stale 'running' task'ları diskten gerçeğe çek (main process sessizce öldükten sonra)")
+    p_rc.add_argument("run_id")
+    p_rc.add_argument("--force", action="store_true",
+                      help="Run finished olarak işaretli olsa bile yine de tara")
+    p_rc.add_argument("--force-kill", action="store_true",
+                      help="Hâlâ koşan PID'leri SIGTERM ile öldür (varsayılan: atla)")
+    p_rc.set_defaults(func=cmd_recover)
 
     p_at = sub.add_parser("attach", help="Detach edilmiş run'a geri bağlan")
     p_at.add_argument("run_id")
