@@ -43,6 +43,12 @@ DEEPSEEK_URL = "https://api.deepseek.com/v1/chat/completions"
 DEEPSEEK_MODEL = "deepseek-v4-pro"
 POLL_INTERVAL = int(os.environ.get("DIRECTOR_POLL_SEC", "30"))
 DEFAULT_TIMEOUT_MIN = int(os.environ.get("DIRECTOR_TASK_TIMEOUT_MIN", "30"))
+# Heartbeat: when _PROCS handle is gone (e.g. after attach to a detached run),
+# raw os.kill(pid,0) is vulnerable to PID reuse. If the PID looks alive but the
+# task's log file hasn't been written for this many seconds, treat it as a ghost
+# (wedged or reused PID). Default 5min, override with DIRECTOR_HEARTBEAT_SEC=0
+# to disable the check (legacy behavior).
+TASK_HEARTBEAT_SEC = int(os.environ.get("DIRECTOR_HEARTBEAT_SEC", "300"))
 DEFAULT_MAX_RETRIES = int(os.environ.get("DIRECTOR_MAX_RETRIES", "1"))
 
 # --- Opus 4.7 high (used for decompose only, daily quota capped) ---
@@ -1723,16 +1729,32 @@ def spawn_task(rd: Path, task: dict, state: dict, run_id: str, attempt: int) -> 
     _PROCS[task["id"]] = proc
     return proc.pid
 
-def task_status(task: dict) -> tuple[str, int | None]:
+def task_status(task: dict, rd: Path | None = None) -> tuple[str, int | None]:
+    """Return (status, exit_code). status ∈ {running, done, failed, ghost}.
+    'ghost' means PID looks alive but the task log has been silent for
+    TASK_HEARTBEAT_SEC. Caused by either a wedged worker or PID reuse after a
+    silent main-process death. Caller (monitor_loop) treats ghost like a timeout.
+    Heartbeat check requires `rd` (run dir) and only runs when _PROCS handle is
+    absent, since an in-process Popen handle is authoritative."""
     proc = _PROCS.get(task["id"])
     if proc is None:
         if not task.get("pid"):
             return ("failed", None)
         try:
             os.kill(task["pid"], 0)
-            return ("running", None)
         except (ProcessLookupError, PermissionError):
             return ("done", None)
+        # PID alive. Optional heartbeat check via log mtime.
+        if rd is not None and TASK_HEARTBEAT_SEC > 0:
+            log_path = rd / "logs" / f"{task['id']}.log"
+            if log_path.exists():
+                try:
+                    age = time.time() - log_path.stat().st_mtime
+                    if age > TASK_HEARTBEAT_SEC:
+                        return ("ghost", None)
+                except Exception:
+                    pass
+        return ("running", None)
     rc = proc.poll()
     if rc is None:
         return ("running", None)
@@ -1965,7 +1987,7 @@ def _monitor_loop_inner(rd: Path, state: dict, run_id: str) -> None:
         for t in state["tasks"]:
             if t["status"] != "running":
                 continue
-            status, rc = task_status(t)
+            status, rc = task_status(t, rd)
             if status == "running":
                 any_running = True
                 started = datetime.fromisoformat(t["started"])
@@ -1983,6 +2005,22 @@ def _monitor_loop_inner(rd: Path, state: dict, run_id: str) -> None:
                     if t["attempts"] <= max_retries:
                         print(f"   ↻ retry budget left, requeuing")
                         t["status"] = "pending"
+                continue
+            if status == "ghost":
+                # PID alive but log silent past TASK_HEARTBEAT_SEC. Either wedged worker
+                # or PID reuse after a silent main-process death. Treat as timeout.
+                try:
+                    os.killpg(os.getpgid(t["pid"]), signal.SIGTERM)
+                except Exception:
+                    pass
+                t["status"] = "timeout"
+                t["ended"] = datetime.now(timezone.utc).isoformat()
+                t["ghost_kill"] = True
+                any_change = True
+                print(f"💀 [{t['id']}] heartbeat dead (PID alive but log silent >{TASK_HEARTBEAT_SEC}s), killed")
+                if t["attempts"] <= max_retries:
+                    print(f"   ↻ retry budget left, requeuing")
+                    t["status"] = "pending"
                 continue
             # Process exited
             log_path = rd / "logs" / f"{t['id']}.log"

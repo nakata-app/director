@@ -101,6 +101,13 @@ gate (`assert_under_daily_cap`) blocks new spend once cap is reached.
 5. If the director main pid is gone but `state.json` still shows tasks as `running`, the main process died. Run `./director.py recover <run-id>`. If a child PID is still alive but you're sure it's wedged, add `--force-kill`.
 6. Stale runs are not harmless: they leak orphaned children and pollute `status` listings. Always recover or cancel.
 
+### Worker is wedged but PID still alive (heartbeat dead)
+The monitor watches each task's log mtime in addition to PID liveness. If a task's PID looks alive but the log has been silent for `DIRECTOR_HEARTBEAT_SEC` (default 300s = 5min), the monitor treats it as a ghost: SIGTERMs the process group, marks the task `timeout` with `ghost_kill: true`, and requeues if retry budget remains. This catches both wedged workers (LLM client deadlock, file lock) and PID reuse after a silent main-process death.
+
+To loosen for slow domains: `export DIRECTOR_HEARTBEAT_SEC=900` (15min). To disable entirely (legacy behavior, vulnerable to PID reuse): `DIRECTOR_HEARTBEAT_SEC=0`.
+
+If a task has `ghost_kill: true` but you believe it was a false positive, raise `DIRECTOR_HEARTBEAT_SEC` for the next run and re-execute the goal.
+
 ### Director main process crashed (state.main_error)
 The monitor loop catches catastrophic exceptions, writes the traceback to `state["main_error"]` + `state["main_error_at"]`, prints a `💥 Director main loop crashed` banner to stderr with a recover hint, and re-raises.
 
