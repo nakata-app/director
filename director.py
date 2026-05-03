@@ -1712,6 +1712,7 @@ def spawn_task(rd: Path, task: dict, state: dict, run_id: str, attempt: int) -> 
     else:
         cmd = ["metis", "--yes", full_brief]
     cwd = task.get("cwd") or str(Path.home())
+    os.makedirs(cwd, exist_ok=True)
     env = {**os.environ, "DIRECTOR_RUN_ID": run_id, "DIRECTOR_TASK_ID": task["id"]}
     lf = open(log, mode)
     if attempt > 0:
