@@ -3003,6 +3003,123 @@ def cmd_mnemonics_replay(args) -> int:
             print(f"   - {e}")
     return 0 if report["remaining"] == 0 else 1
 
+# --- M4-T03: Programmatic API for embedding Director in downstream products ---
+__all__ = [
+    # Run lifecycle
+    "run", "ab",
+    # Recovery
+    "recover",
+    # Tighteners (drift gates, public for embedded callers)
+    "tighten_persona_if_drift", "tighten_critic_if_drift", "tighten_decomposer_if_drift",
+    "tighten_persona_with_rollback",
+    # Disk truth helpers (useful for assertions in caller's tests)
+    "verify_artifacts", "load_state", "RUNS_DIR",
+    # Domain config (caller can introspect or override paths via env)
+    "domain_drift_thresholds",
+]
+
+def _newest_run_dirs_since(pre_set: set[str], limit: int = 1) -> list[str]:
+    if not RUNS_DIR.exists():
+        return []
+    post = {p.name for p in RUNS_DIR.iterdir() if p.is_dir()}
+    new = post - pre_set
+    if not new:
+        return []
+    return sorted(new, key=lambda n: (RUNS_DIR / n).stat().st_mtime, reverse=True)[:limit]
+
+def _snapshot_runs() -> set[str]:
+    if not RUNS_DIR.exists():
+        return set()
+    return {p.name for p in RUNS_DIR.iterdir() if p.is_dir()}
+
+def run(goal: str, *, cwd: str | None = None, yes: bool = True,
+        timeout_min: int = 0, retries: int = DEFAULT_MAX_RETRIES,
+        skip_critic: bool = False, skip_task_critic: bool = False) -> dict:
+    """Programmatic equivalent of `./director.py run`. Embed in any Python caller.
+
+    Returns the final `state.json` contents as a dict, with two extra keys:
+      _exit_code  — raw cmd_run return code (0=success, 1=cancelled, 2=decompose error)
+      _run_id     — the new run's id (also present in state['run_id'])
+
+    cwd: child tasks inherit this as their working dir. Defaults to caller's cwd.
+    yes: skip the interactive plan-approval prompt. Library callers must keep True.
+    timeout_min: 0 = use plan's per-task timeout; nonzero overrides every task.
+    retries / skip_critic / skip_task_critic: same semantics as the CLI flags.
+
+    Raises RuntimeError if no new run dir was created (e.g. decompose failed before
+    the run dir was provisioned). Inspect the returned _exit_code for finer cases.
+    """
+    from types import SimpleNamespace
+    if not yes:
+        raise ValueError("director.run() requires yes=True; interactive mode is CLI-only.")
+    args = SimpleNamespace(
+        goal=goal, yes=yes, timeout=timeout_min, retries=retries,
+        skip_critic=skip_critic, skip_task_critic=skip_task_critic,
+    )
+    pre = _snapshot_runs()
+    old_cwd = os.getcwd()
+    if cwd:
+        os.chdir(cwd)
+    try:
+        rc = cmd_run(args)
+    finally:
+        if cwd:
+            os.chdir(old_cwd)
+    new = _newest_run_dirs_since(pre, limit=1)
+    if not new:
+        raise RuntimeError(f"director.run() exited rc={rc} but no new run dir was created")
+    run_id = new[0]
+    state = json.loads((RUNS_DIR / run_id / "state.json").read_text())
+    state["_exit_code"] = rc
+    state["_run_id"] = run_id
+    return state
+
+def ab(goal: str, *, cwd: str | None = None, yes: bool = True,
+       skip_critic: bool = False, setup_cmd: str | None = None,
+       auto_tighten: bool = False, domain: str = "default") -> dict:
+    """Programmatic equivalent of `./director.py ab`. Returns aggregate dict:
+      {
+        "_exit_code": int,
+        "arms": [state_A, state_B],   # newest two runs after the call
+        "run_ids": [run_id_A, run_id_B],
+      }
+    Each arm state contains its own tasks list with critic + persona_fidelity.
+    Caller computes the verdict (e.g. compare arm pass-rates or fidelity sums).
+    yes must be True for non-interactive use."""
+    from types import SimpleNamespace
+    if not yes:
+        raise ValueError("director.ab() requires yes=True; interactive mode is CLI-only.")
+    args = SimpleNamespace(
+        goal=goal, yes=yes, skip_critic=skip_critic, setup_cmd=setup_cmd,
+        auto_tighten=auto_tighten, domain=domain,
+    )
+    pre = _snapshot_runs()
+    old_cwd = os.getcwd()
+    if cwd:
+        os.chdir(cwd)
+    try:
+        rc = cmd_ab(args)
+    finally:
+        if cwd:
+            os.chdir(old_cwd)
+    new = _newest_run_dirs_since(pre, limit=2)
+    if len(new) < 2:
+        raise RuntimeError(f"director.ab() exited rc={rc} but found {len(new)} new run dir(s) (expected 2)")
+    arms = [json.loads((RUNS_DIR / r / "state.json").read_text()) for r in new]
+    return {"_exit_code": rc, "arms": arms, "run_ids": new}
+
+def recover(run_id: str, *, force: bool = False, force_kill: bool = False) -> dict:
+    """Programmatic equivalent of `./director.py recover`. Settles stale 'running'
+    tasks to done/failed and returns the final state dict. Mirrors the cmd_recover
+    semantics: PID liveness + log heartbeat + verify_artifacts(quick=True)."""
+    from types import SimpleNamespace
+    args = SimpleNamespace(run_id=run_id, force=force, force_kill=force_kill)
+    rc = cmd_recover(args)
+    rd = RUNS_DIR / run_id
+    state = json.loads((rd / "state.json").read_text()) if (rd / "state.json").exists() else {}
+    state["_exit_code"] = rc
+    return state
+
 def main() -> int:
     p = argparse.ArgumentParser(prog="director")
     sub = p.add_subparsers(dest="cmd", required=True)

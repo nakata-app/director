@@ -84,10 +84,20 @@ These are the rules that keep self-improvement from collapsing into either degen
 
 ## Status (M1 to M4 roadmap)
 
-- **M1**: Single-domain auto-tighten validated end-to-end with drift signals firing correctly. **In progress.**
-- **M2**: Decomposer and critic prompts also subject to auto-tighten. Three layers of self-improvement at once.
-- **M3**: Three domains (security, refactor, design) with per-domain personas and ground-truth fixture suites for regression testing.
-- **M4**: Director embedded as worker layer under one or more downstream products.
+- **M1**: Single-domain auto-tighten validated end-to-end with drift signals firing correctly. **Closed.**
+- **M2**: Decomposer and critic prompts also subject to auto-tighten. Three layers of self-improvement at once. **Closed.**
+- **M3**: Three domains (security, refactor, design) with per-domain personas and ground-truth fixture suites for regression testing. **Closed 2026-05-03.**
+- **M4**: Director embedded as worker layer under one or more downstream products. **In progress** (T01 daily USD cap closed; T02 operator playbook closed; T03 programmatic API + T04 contributor flow next).
+
+## Documentation
+
+- [`docs/VISION.md`](docs/VISION.md), what the system is and is not.
+- [`docs/ROADMAP.md`](docs/ROADMAP.md), milestone closure log.
+- [`docs/OPERATOR.md`](docs/OPERATOR.md), day-to-day commands, debugging, recovery, audit.
+- [`docs/EMBEDDING.md`](docs/EMBEDDING.md), Python API for downstream products that want to call `run` / `ab` / `tighten_*_if_drift` without spawning a subprocess.
+- [`docs/INHERITANCE.md`](docs/INHERITANCE.md), what a new maintainer needs to read first.
+- [`docs/EVOLUTION_LOG.md`](docs/EVOLUTION_LOG.md), every persona tighten and rollback, with reasons.
+- [`docs/DISCIPLINES.md`](docs/DISCIPLINES.md), the design rules every change must respect.
 
 ## License
 
